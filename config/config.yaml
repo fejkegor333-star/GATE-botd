@@ -1,0 +1,65 @@
+bot:
+  name: "Gate Futures Bot"
+  version: "1.0.0"
+
+monitoring:
+  poll_interval_seconds: 30  # Проверяем часто чтобы не упустить волатильность
+  new_listing_timeout_minutes: 10  # Таймаут ожидания заполнения стакана
+  contracts_endpoint: "/futures/usdt/contracts"
+
+websocket:
+  reconnect_interval_seconds: 5
+  max_reconnect_attempts: 10
+  order_book_levels: 20
+  volume_imbalance_threshold: 0.6
+  min_volume_threshold_usdt: 1000
+  min_order_book_levels: 5
+  max_spread_percentage: 1.0
+  ping_interval_seconds: 30
+  order_book_update_interval_ms: 100
+  order_book_depth: 20
+
+trading:
+  default_position_size_usdt: 10
+  default_leverage: 20
+  min_order_size_usdt: 6
+  order_timeout_seconds: 30
+  max_positions: 10
+  max_avg_count: 3
+  avg_levels: [300, 700, 1000]
+  take_profit_percentage: 2
+  stop_loss_percentage: 0
+  position_timeout_hours: 720
+  days_since_listing_limit: 30
+  ath_ratio_threshold: 0.3
+
+risk:
+  balance_check_interval_seconds: 5
+  max_open_orders_per_second: 10
+  circuit_breaker_errors: 3
+  protection_trigger_pct: 50  # Просадка для срабатывания защиты (%)
+  protection_transfer_pct: 25  # Процент перевода при защите (%)
+  daily_loss_limit_usdt: 1000  # Дневной лимит потерь (USDT)
+
+ath:
+  update_interval_hours: 1
+  lookback_weeks: 520  # 10 лет
+  candles_endpoint: "/futures/usdt/candlesticks"
+
+redis:
+  host: "localhost"
+  port: 6379
+  db: 0
+  password: ""
+  enabled: false  # Включить при наличии Redis
+
+database:
+  pool_size: 10
+  max_overflow: 20
+  pool_recycle: 3600
+
+logging:
+  format: "%(asctime)s [%(levelname)s] [%(name)s] %(message)s"
+  datefmt: "%Y-%m-%d %H:%M:%S"
+  rotation: "midnight"
+  retention: "30 days"

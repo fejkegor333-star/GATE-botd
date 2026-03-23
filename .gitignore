@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Secrets
+*secret*
+*private*
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Windows reserved names
+nul
+
+# Test files
+test_*.py
+test_*.log
+*_test.py
+
+# Documentation files (optional)
+*.docx
+output*.txt
+
+# Runtime
+__pycache__/
+*.db
+logs/
+venv/
+.env
