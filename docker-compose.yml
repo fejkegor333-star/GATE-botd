@@ -1,0 +1,56 @@
+services:
+  bot:
+    build: .
+    container_name: gate-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - gate-net
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: gate-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-gate_bot}
+      POSTGRES_USER: ${DB_USER:-gate_bot}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-gate_bot} -d ${DB_NAME:-gate_bot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - gate-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: gate-redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - gate-net
+
+networks:
+  gate-net:
+    driver: bridge

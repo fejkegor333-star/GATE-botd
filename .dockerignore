@@ -1,0 +1,17 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+data/
+logs/
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.claude
+tests/
+*.md
+!DEPLOY_DOCKER.md
+deploy.sh
+venv/
