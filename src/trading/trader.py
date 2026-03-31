@@ -53,7 +53,6 @@ class PositionManager:
                 'take_profit_pct': settings.get('take_profit_pct', 2.0),
                 'ath_ratio_threshold': settings.get('ath_ratio_threshold', 0.3),
                 'days_since_listing_limit': settings.get('days_since_listing_limit', 30),
-                'use_cross_margin': settings.get('use_cross_margin', True),
             }
 
     async def open_position(
@@ -128,14 +127,10 @@ class PositionManager:
                 maintenance_rate = float(contract_info.get('maintenance_rate', 0.05) or 0.05)
                 taker_fee_rate = float(contract_info.get('taker_fee_rate', 0.00075) or 0.00075)
 
-                # Выбираем режим маржи: cross (leverage=0) или isolated
-                use_cross = ts.get('use_cross_margin', True) if 'use_cross_margin' in ts else True
-                if use_cross:
-                    actual_leverage = await self.api_client.set_leverage(
-                        symbol, leverage=0, cross_leverage_limit=max_leverage
-                    )
-                else:
-                    actual_leverage = await self.api_client.set_leverage(symbol, leverage=max_leverage)
+                # Всегда cross margin (leverage=0 + cross_leverage_limit)
+                actual_leverage = await self.api_client.set_leverage(
+                    symbol, leverage=0, cross_leverage_limit=max_leverage
+                )
                 if actual_leverage == 0:
                     logger.error(f"Не удалось установить leverage для {symbol}")
                     return None
@@ -568,6 +563,11 @@ class PositionManager:
             # Получаем настройки из БД
             ts = self._get_trading_settings()
 
+            # Проверяем лимит позиций
+            if ts['max_concurrent_coins'] > 0 and len(self._active_positions) >= ts['max_concurrent_coins']:
+                logger.warning(f"Переоткрытие отменено: лимит позиций ({len(self._active_positions)}/{ts['max_concurrent_coins']})")
+                return None
+
             # Проверяем условия для переоткрытия
             ath_ratio = self._get_ath_ratio(symbol, new_entry_price)
             if ath_ratio is not None and ath_ratio < ts['ath_ratio_threshold']:
@@ -995,6 +995,9 @@ class PositionManager:
                 return
 
             synced = 0
+            ts = self._get_trading_settings()
+            max_coins = ts['max_concurrent_coins']
+
             for pos in exchange_positions:
                 symbol = pos.get('contract', '')
                 size = int(pos.get('size', 0) or 0)
@@ -1004,6 +1007,11 @@ class PositionManager:
 
                 # Если позиция уже загружена из БД — пропускаем
                 if symbol in self._active_positions:
+                    continue
+
+                # Проверяем лимит позиций
+                if max_coins > 0 and len(self._active_positions) >= max_coins:
+                    logger.warning(f"Синхронизация: лимит позиций ({len(self._active_positions)}/{max_coins}), {symbol} пропущен")
                     continue
 
                 # Позиция есть на бирже, но нет в БД — восстанавливаем

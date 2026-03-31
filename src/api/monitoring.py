@@ -266,13 +266,14 @@ class ListingMonitor:
             if new_contracts:
                 symbols_to_process = await self._save_new_contracts(new_contracts)
 
-                # Уведомляем о новых листингах (неблокирующе через create_task)
+                # Уведомляем о новых листингах ПОСЛЕДОВАТЕЛЬНО
+                # (create_task вызывал race condition — все проверяли лимит одновременно)
                 for contract_info in new_contracts:
                     if contract_info['symbol'] not in symbols_to_process:
                         continue
                     for callback in self._on_new_listing_callbacks:
                         try:
-                            asyncio.create_task(callback(contract_info['symbol'], contract_info['data']))
+                            await callback(contract_info['symbol'], contract_info['data'])
                         except Exception as cb_err:
                             logger.error(f"Ошибка в callback нового листинга: {cb_err}")
 

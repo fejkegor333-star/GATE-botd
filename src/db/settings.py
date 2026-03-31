@@ -102,11 +102,6 @@ class SettingsManager:
             'type': 'bool',
             'description': 'Фильтровать стейблкоины и токенизированные акции'
         },
-        'use_cross_margin': {
-            'value': 'true',
-            'type': 'bool',
-            'description': 'Использовать кросс-маржу (true) или изолированную (false)'
-        },
         'orderbook_monitoring_enabled': {
             'value': 'true',
             'type': 'bool',
