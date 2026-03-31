@@ -871,29 +871,14 @@ class TradingBot:
 
     async def _handle_reopen(self, symbol: str, last_exit_price: float):
         """
-        Обработать переоткрытие позиции после TP
+        Обработать переоткрытие позиции после TP.
+        Минимальная задержка: сразу после подтверждения закрытия отправляем ордер.
 
         Args:
             symbol: Символ контракта
             last_exit_price: Цена последнего выхода
         """
         try:
-            # Проверяем возможность переоткрытия
-            if not position_manager.can_reopen(symbol, last_exit_price):
-                logger.info(f"Переоткрытие {symbol} отменено: условия не выполнены")
-                return
-
-            # Получаем текущую цену из стакана
-            order_book = ws_client.get_order_book(symbol)
-            if not order_book:
-                logger.warning(f"Нет стакана для переоткрытия {symbol}")
-                return
-
-            entry_price = order_book.get_best_bid()
-            if not entry_price:
-                logger.warning(f"Нет цены bid для переоткрытия {symbol}")
-                return
-
             # Получаем объём из БД с учётом режима разгона
             from src.db.settings import SettingsManager
             with db.get_session() as session:
@@ -901,18 +886,19 @@ class TradingBot:
                 base_volume = settings.get('initial_position_usdt', 10.0)
             volume_usdt = acceleration_manager.calculate_volume(symbol, base_volume)
 
-            # Переоткрываем позицию
+            # Переоткрываем позицию сразу по цене последнего выхода
+            # (reopen_position сам проверит ATH ratio, дни листинга, лимит позиций)
             position = await position_manager.reopen_position(
                 symbol,
-                entry_price,
+                last_exit_price,
                 volume_usdt,
             )
 
             if position:
-                logger.info(f"🔄 SHORT переоткрыт: {symbol} @ ${entry_price:.6f}")
+                logger.info(f"🔄 SHORT переоткрыт: {symbol} @ ${last_exit_price:.6f}")
                 await self.notifier.send_position_reopened(
                     symbol,
-                    entry_price,
+                    last_exit_price,
                     volume_usdt,
                 )
 
