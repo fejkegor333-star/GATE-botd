@@ -118,7 +118,6 @@ class Keyboards:
         )
         builder.row(
             InlineKeyboardButton(text="🔢 Макс. усреднений", callback_data=make_callback_data("setting_edit", "max_avg_count")),
-            InlineKeyboardButton(text="💵 Объем усредн.", callback_data=make_callback_data("setting_edit", "avg_amount")),
         )
         builder.row(
             InlineKeyboardButton(text="🚀 Разгон", callback_data=make_callback_data("setting_edit", "acceleration")),
@@ -1338,7 +1337,7 @@ class TelegramBot:
         if signal:
             avg_number, avg_level = signal
             # Добавляем усреднение
-            avg_volume = self.helpers.get_setting_value('avg_amount_usdt') or 10.0
+            avg_volume = self.helpers.get_setting_value('initial_position_usdt') or 10.0
             success = await position_manager.add_averaging(
                 symbol,
                 float(position.current_price or position.entry_price),
@@ -1763,7 +1762,6 @@ class TelegramBot:
         max_coins = self.helpers.get_setting_value('max_concurrent_coins') or 10
         drawdown = self.helpers.get_setting_value('max_drawdown_pct') or 50
         max_avg = self.helpers.get_setting_value('max_avg_count') or 3
-        avg_amount = self.helpers.get_setting_value('avg_amount_usdt') or 10
 
         accel_enabled = self.helpers.get_setting_value('acceleration_enabled') or False
         accel_step = self.helpers.get_setting_value('acceleration_step_pct') or 10
@@ -1774,7 +1772,7 @@ class TelegramBot:
         text = (
             "⚙️ <b>Настройки</b>\n\n"
             f"💵 Объем позиции: ${position_size:.0f}\n"
-            f"💵 Объем усреднения: ${avg_amount:.0f}\n"
+            f"💵 Объем усреднения: ${position_size:.0f} (= позиция)\n"
             f"🎯 TP %: {tp_pct:.1f}%\n"
             f"📊 ATH ratio: {ath_ratio:.2f}\n"
             f"📅 Дней листинг: {days}\n"

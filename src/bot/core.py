@@ -721,11 +721,11 @@ class TradingBot:
         try:
             avg_number, avg_level_pct = signal
 
-            # Получаем объём усреднения из БД (согласно ТЗ — отдельная настройка avg_amount_usdt)
+            # Объём усреднения = объёму первоначальной позиции
             from src.db.settings import SettingsManager
             with db.get_session() as session:
                 settings = SettingsManager(session)
-                volume_usdt = settings.get('avg_amount_usdt', 10.0)
+                volume_usdt = settings.get('initial_position_usdt', 10.0)
 
             # Получаем параметры контракта для корректной проверки маржи
             contract_info = await self.api_client.get_contract_info(symbol)
