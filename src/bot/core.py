@@ -41,6 +41,7 @@ class TradingBot:
         self._locks_lock = asyncio.Lock()  # Для безопасного создания per-symbol lock
         self._close_cooldowns: dict[str, float] = {}  # Кулдаун после неудачного закрытия
         self._last_exchange_sync: float = 0  # Время последней синхронизации с биржей
+        self._notified_listings: set[str] = set()  # Символы, о которых уже отправлено уведомление
         # Настройки мониторинга стакана
         self._orderbook_enabled: bool = True
         self._orderbook_throttle_ms: int = 100
@@ -345,16 +346,18 @@ class TradingBot:
 
             logger.info(f"🚀 Новый листинг обнаружен: {symbol}")
 
-            # Уведомляем в Telegram о новом листинге
-            try:
-                create_time = contract_data.get('create_time')
-                if isinstance(create_time, (int, float)):
-                    launch_time = datetime.utcfromtimestamp(create_time)
-                else:
-                    launch_time = datetime.utcnow()
-                await self.notifier.send_new_listing(symbol, launch_time)
-            except Exception:
-                pass
+            # Уведомляем в Telegram о новом листинге (только первый раз)
+            if symbol not in self._notified_listings:
+                self._notified_listings.add(symbol)
+                try:
+                    create_time = contract_data.get('create_time')
+                    if isinstance(create_time, (int, float)):
+                        launch_time = datetime.utcfromtimestamp(create_time)
+                    else:
+                        launch_time = datetime.utcnow()
+                    await self.notifier.send_new_listing(symbol, launch_time)
+                except Exception:
+                    pass
 
             # Проверяем готовность контракта к торговле
             trade_size = int(float(contract_data.get('trade_size', 0) or 0))
