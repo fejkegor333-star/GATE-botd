@@ -710,7 +710,7 @@ class BalanceProtectionChecker:
 
     async def _transfer_spot_to_futures(self, amount: float):
         """
-        Перевести USDT со спота на фьючерсы
+        Перевести USDT со спота на фьючерсы через Gate.io /wallet/transfers API.
 
         Args:
             amount: Сумма для перевода
@@ -718,30 +718,43 @@ class BalanceProtectionChecker:
         try:
             logger.info(f"💰 Перевод ${amount:.2f} USDT: Спот → Фьючерсы")
 
-            # Выполняем перевод через API
-            url_path = '/futures/usdt/transfer'
+            # Проверяем спотовый баланс перед переводом
+            spot_balance = await self._get_spot_balance()
+            if spot_balance is None or spot_balance <= 0:
+                logger.warning("Спотовый баланс пуст или недоступен, перевод невозможен")
+                return
+            if amount > spot_balance:
+                logger.warning(f"Запрошено ${amount:.2f}, но на споте только ${spot_balance:.2f}. Переводим доступное.")
+                amount = spot_balance
+
+            if amount < 0.01:
+                logger.warning(f"Сумма перевода слишком мала: ${amount:.2f}")
+                return
+
+            # Правильный endpoint Gate.io v4: /wallet/transfers
+            url_path = '/wallet/transfers'
             url = self.api_client._build_url(url_path)
 
             payload = {
+                'currency': 'USDT',
                 'from': 'spot',
                 'to': 'futures',
-                'amount': str(amount),
-                'currency': 'USDT',
+                'amount': str(round(amount, 2)),
+                'settle': 'usdt',
             }
 
-            # Используем авторизованные заголовки для POST запроса (ИСПРАВЛЕНО)
             import json
             body = json.dumps(payload)
             headers = self.api_client._get_auth_headers('POST', url_path, body=body)
 
             session = await self.api_client.get_session()
             async with session.post(url, json=payload, headers=headers) as response:
-                if response.status != 200:
+                if response.status not in (200, 201):
                     error_text = await response.text()
-                    logger.error(f"Ошибка перевода: {error_text}")
+                    logger.error(f"Ошибка перевода: {response.status} {error_text[:300]}")
                     return
 
-                logger.info(f"✅ Перевод выполнен успешно: ${amount:.2f} USDT")
+                logger.info(f"✅ Перевод выполнен успешно: ${amount:.2f} USDT (Спот → Фьючерсы)")
 
                 # Уведомляем в Telegram
                 try:

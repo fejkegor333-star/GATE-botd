@@ -53,6 +53,7 @@ class PositionManager:
                 'take_profit_pct': settings.get('take_profit_pct', 2.0),
                 'ath_ratio_threshold': settings.get('ath_ratio_threshold', 0.3),
                 'days_since_listing_limit': settings.get('days_since_listing_limit', 30),
+                'use_cross_margin': settings.get('use_cross_margin', True),
             }
 
     async def open_position(
@@ -127,7 +128,14 @@ class PositionManager:
                 maintenance_rate = float(contract_info.get('maintenance_rate', 0.05) or 0.05)
                 taker_fee_rate = float(contract_info.get('taker_fee_rate', 0.00075) or 0.00075)
 
-                actual_leverage = await self.api_client.set_leverage(symbol, leverage=max_leverage)
+                # Выбираем режим маржи: cross (leverage=0) или isolated
+                use_cross = ts.get('use_cross_margin', True) if 'use_cross_margin' in ts else True
+                if use_cross:
+                    actual_leverage = await self.api_client.set_leverage(
+                        symbol, leverage=0, cross_leverage_limit=max_leverage
+                    )
+                else:
+                    actual_leverage = await self.api_client.set_leverage(symbol, leverage=max_leverage)
                 if actual_leverage == 0:
                     logger.error(f"Не удалось установить leverage для {symbol}")
                     return None
@@ -198,6 +206,21 @@ class PositionManager:
                     actual_fill_price = float(fill_price_str)
                 actual_fill_volume = abs(filled) * quanto * actual_fill_price
                 logger.info(f"Ордер исполнен: {symbol} filled={filled}/{abs(order_size)} @ ${actual_fill_price:.6f}")
+
+                # Верификация: проверяем что позиция реально создалась на бирже
+                try:
+                    await asyncio.sleep(0.5)  # Небольшая задержка для обработки на бирже
+                    exchange_pos = await self.api_client.get_position(symbol)
+                    ex_size = int(exchange_pos.get('size', 0) or 0) if exchange_pos else 0
+                    if ex_size == 0:
+                        logger.warning(f"Верификация: позиция {symbol} НЕ обнаружена на бирже после ордера!")
+                    else:
+                        ex_entry = float(exchange_pos.get('entry_price', 0) or 0)
+                        logger.info(f"Верификация: позиция {symbol} подтверждена, size={ex_size}, entry=${ex_entry:.6f}")
+                        if ex_entry > 0:
+                            actual_fill_price = ex_entry
+                except Exception as verify_err:
+                    logger.warning(f"Ошибка верификации позиции {symbol}: {verify_err}")
             else:
                 contract_info = await self.api_client.get_contract_info(symbol)
                 quanto = float(contract_info.get('quanto_multiplier', 1) or 1) if contract_info else 1
@@ -905,7 +928,9 @@ class PositionManager:
 
     def _averaging_level_used(self, symbol: str, level_pct: float) -> bool:
         """
-        Проверить, было ли уже усреднение на этом уровне
+        Проверить, было ли уже усреднение на этом уровне.
+        Фильтрует только усреднения, созданные после opened_at (для корректной
+        работы после reopen — старые усреднения не блокируют новые).
 
         Args:
             symbol: Символ контракта
@@ -924,13 +949,16 @@ class PositionManager:
                 if not position:
                     return False
 
-                # Проверяем историю усреднений
-                avg_history = session.query(AveragingHistory).filter(
+                # Проверяем историю усреднений, но только после opened_at
+                # Это важно после reopen: старые усреднения не должны блокировать новые
+                query = session.query(AveragingHistory).filter(
                     AveragingHistory.position_id == position.id,
                     AveragingHistory.avg_level_pct == level_pct
-                ).first()
+                )
+                if position.opened_at:
+                    query = query.filter(AveragingHistory.created_at >= position.opened_at)
 
-                return avg_history is not None
+                return query.first() is not None
 
         except Exception as e:
             logger.error(f"Ошибка проверки уровня усреднения: {e}")

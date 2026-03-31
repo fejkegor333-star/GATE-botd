@@ -492,13 +492,14 @@ class GateApiClient:
             logger.error(f"Ошибка получения max leverage {contract}: {e}")
             return 20
 
-    async def set_leverage(self, contract: str, leverage: int = 20) -> int:
+    async def set_leverage(self, contract: str, leverage: int = 20, cross_leverage_limit: int = 0) -> int:
         """
         Установить кредитное плечо для контракта
 
         Args:
             contract: Символ контракта (например, BTC_USDT)
-            leverage: Кредитное плечо (по умолчанию 20)
+            leverage: Кредитное плечо (0 = cross margin mode)
+            cross_leverage_limit: Лимит плеча для cross margin (только когда leverage=0)
 
         Returns:
             Фактическое плечо, установленное Gate.io (0 при ошибке)
@@ -508,10 +509,13 @@ class GateApiClient:
             url_path = f'/futures/usdt/positions/{contract}/leverage'
             url = self._build_url(url_path)
 
-            query_string = f'leverage={leverage}'
+            params = {'leverage': leverage}
+            if cross_leverage_limit > 0:
+                params['cross_leverage_limit'] = cross_leverage_limit
+            query_string = '&'.join(f'{k}={v}' for k, v in params.items())
             headers = self._get_auth_headers('POST', url_path, query_string=query_string)
 
-            async with session.post(url, params={'leverage': leverage}, headers=headers) as response:
+            async with session.post(url, params=params, headers=headers) as response:
                 if response.status != 200:
                     error_text = await response.text()
                     logger.error(f"Ошибка установки leverage {contract}: {response.status} {error_text[:200]}")
@@ -528,14 +532,16 @@ class GateApiClient:
                 cross_limit = int(data.get('cross_leverage_limit', 0) or 0)
                 # В cross-margin mode leverage=0 и работает cross_leverage_limit
                 effective = actual_leverage if actual_leverage > 0 else cross_limit
-                if effective != leverage:
+                requested = cross_leverage_limit if leverage == 0 else leverage
+                if effective != requested:
                     logger.warning(
-                        f"Leverage {contract}: запрошено x{leverage}, "
+                        f"Leverage {contract}: запрошено x{requested}, "
                         f"фактически x{effective} (leverage={actual_leverage}, cross_limit={cross_limit})"
                     )
                 else:
-                    logger.info(f"Leverage установлен: {contract} x{effective}")
-                return effective if effective > 0 else leverage
+                    mode = "cross" if leverage == 0 else "isolated"
+                    logger.info(f"Leverage установлен: {contract} x{effective} ({mode})")
+                return effective if effective > 0 else requested
 
         except Exception as e:
             logger.error(f"Ошибка установки leverage {contract}: {e}")

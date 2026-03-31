@@ -18,6 +18,37 @@ from src.utils.config import config
 
 logger = logging.getLogger(__name__)
 
+# Стейблкоины — не торгуем (нет волатильности)
+STABLECOINS = {
+    'USDC', 'BUSD', 'DAI', 'TUSD', 'FDUSD', 'USDD', 'PYUSD', 'USDP',
+    'GUSD', 'FRAX', 'LUSD', 'CEUR', 'SUSD', 'MIM', 'UST', 'USTC',
+    'EURC', 'EURT', 'USDJ', 'CUSD', 'USDN', 'USDK', 'HUSD', 'TRIBE',
+}
+
+# Токенизированные акции — не подходят под стратегию SHORT на новых листингах
+STOCK_TOKENS = {
+    'AAPL', 'TSLA', 'AMZN', 'GOOGL', 'META', 'MSFT', 'NVDA', 'NFLX',
+    'COIN', 'MSTR', 'GME', 'AMC', 'BABA', 'AMD', 'INTC', 'PYPL',
+    'SQ', 'UBER', 'ABNB', 'SNAP', 'PLTR',
+}
+
+
+def _is_filtered_symbol(symbol: str) -> str | None:
+    """
+    Проверить, нужно ли отфильтровать символ (стейблкоин или акция).
+
+    Returns:
+        Причина фильтрации или None если символ допустим.
+    """
+    # Извлекаем base currency: "USDC_USDT" -> "USDC"
+    base = symbol.split('_')[0] if '_' in symbol else symbol
+
+    if base in STABLECOINS:
+        return f'stablecoin ({base})'
+    if base in STOCK_TOKENS:
+        return f'stock token ({base})'
+    return None
+
 
 class ListingMonitor:
     """Монитор новых листингов"""
@@ -184,6 +215,13 @@ class ListingMonitor:
                         continue
                     # Cooldown истёк — убираем и пробуем снова
                     del self._retry_after[symbol]
+
+                # Фильтруем стейблкоины и токенизированные акции
+                filter_reason = _is_filtered_symbol(symbol)
+                if filter_reason:
+                    logger.info(f"Контракт {symbol} отфильтрован: {filter_reason}")
+                    self._known_symbols.add(symbol)
+                    continue
 
                 # Проверяем create_time (время создания контракта)
                 # launch_time в Gate.io API - это время экспирации, а не листинга!

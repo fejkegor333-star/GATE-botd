@@ -97,6 +97,31 @@ class SettingsManager:
             'type': 'bool',
             'description': 'Торговать только монеты из белого списка'
         },
+        'filter_stablecoins': {
+            'value': 'true',
+            'type': 'bool',
+            'description': 'Фильтровать стейблкоины и токенизированные акции'
+        },
+        'use_cross_margin': {
+            'value': 'true',
+            'type': 'bool',
+            'description': 'Использовать кросс-маржу (true) или изолированную (false)'
+        },
+        'orderbook_monitoring_enabled': {
+            'value': 'true',
+            'type': 'bool',
+            'description': 'Включить мониторинг стакана через WebSocket'
+        },
+        'orderbook_update_throttle_ms': {
+            'value': '100',
+            'type': 'int',
+            'description': 'Минимальный интервал обработки обновлений стакана (мс)'
+        },
+        'check_orderbook_before_entry': {
+            'value': 'false',
+            'type': 'bool',
+            'description': 'Проверять стакан перед входом в позицию (should_sell_signal)'
+        },
     }
 
     def __init__(self, session: Session):

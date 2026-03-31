@@ -41,6 +41,22 @@ class TradingBot:
         self._locks_lock = asyncio.Lock()  # Для безопасного создания per-symbol lock
         self._close_cooldowns: dict[str, float] = {}  # Кулдаун после неудачного закрытия
         self._last_exchange_sync: float = 0  # Время последней синхронизации с биржей
+        # Настройки мониторинга стакана
+        self._orderbook_enabled: bool = True
+        self._orderbook_throttle_ms: int = 100
+        self._last_ob_update: dict[str, float] = {}  # symbol -> timestamp ms
+
+    def _load_orderbook_settings(self):
+        """Загрузить настройки мониторинга стакана из БД"""
+        try:
+            from src.db.settings import SettingsManager
+            with db.get_session() as session:
+                settings = SettingsManager(session)
+                self._orderbook_enabled = settings.get('orderbook_monitoring_enabled', True)
+                self._orderbook_throttle_ms = settings.get('orderbook_update_throttle_ms', 100)
+            logger.info(f"Настройки стакана: enabled={self._orderbook_enabled}, throttle={self._orderbook_throttle_ms}ms")
+        except Exception as e:
+            logger.warning(f"Ошибка загрузки настроек стакана: {e}")
 
     async def _get_symbol_lock(self, symbol: str) -> asyncio.Lock:
         """Получить или создать lock для конкретного символа"""
@@ -67,6 +83,9 @@ class TradingBot:
         logger.info("Запуск торгового бота...")
 
         try:
+            # 0. Загружаем настройки мониторинга стакана
+            self._load_orderbook_settings()
+
             # 1. Загружаем активные позиции
             logger.info("Загрузка активных позиций...")
             await position_manager.load_active_positions()
@@ -192,6 +211,13 @@ class TradingBot:
         """Цикл мониторинга позиций"""
         while self._running:
             try:
+                # Периодически перечитываем настройки стакана
+                self._load_orderbook_settings()
+
+                # REST fallback: если WS мониторинг отключён, обновляем цены через REST тикер
+                if not self._orderbook_enabled:
+                    await self._rest_price_update()
+
                 await self._check_positions()
                 # Периодически очищаем завершённые задачи
                 self._cleanup_finished_tasks()
@@ -201,6 +227,20 @@ class TradingBot:
             except Exception as e:
                 logger.error(f"Ошибка в цикле мониторинга позиций: {e}")
                 await asyncio.sleep(10)
+
+    async def _rest_price_update(self):
+        """REST fallback: обновить цены позиций через тикер когда WS отключён"""
+        positions = position_manager.get_all_positions()
+        for symbol in positions:
+            try:
+                ticker = await self.api_client.get_ticker(symbol)
+                if ticker:
+                    last_price = float(ticker.get('last', 0) or 0)
+                    if last_price > 0:
+                        await position_manager.update_position_price(symbol, last_price)
+                        await self._check_position_signals(symbol, last_price)
+            except Exception as e:
+                logger.error(f"REST fallback ошибка для {symbol}: {e}")
 
     async def _cleanup_loop(self):
         """Цикл очистки старых позиций"""
@@ -323,7 +363,7 @@ class TradingBot:
             if trade_size == 0 and last_price <= 0:
                 logger.info(f"⏳ {symbol}: торги ещё не начались (trade_size=0, last_price=0). Ожидаем начала торгов...")
                 try:
-                    await self.notifier.send_error(f"⏳ {symbol}: контракт опубликован, но торги ещё не начались. Ожидаем...")
+                    await self.notifier.send_listing_waiting(symbol)
                 except Exception:
                     pass
                 # Запускаем задачу ожидания начала торгов
@@ -381,7 +421,10 @@ class TradingBot:
                     if last_price > 0:
                         logger.info(f"🟢 {symbol}: торги начались! Цена: ${last_price:.6f} (ожидали {int(elapsed)} сек)")
                         try:
-                            await self.notifier.send_error(f"🟢 {symbol}: торги начались! Цена: ${last_price:.6f}")
+                            await self.notifier.send_listing_waiting(
+                                symbol,
+                                reason=f"Торги начались! Цена: ${last_price:.6f} (ожидали {int(elapsed)} сек)"
+                            )
                         except Exception:
                             pass
                         await self._open_short_immediately(symbol)
@@ -404,6 +447,7 @@ class TradingBot:
     async def _open_short_immediately(self, symbol: str):
         """
         Открыть SHORT позицию немедленно через REST API.
+        Опционально ждёт сигнала стакана (should_sell_signal) перед входом.
         """
         lock = await self._get_symbol_lock(symbol)
         async with lock:
@@ -413,6 +457,19 @@ class TradingBot:
                     logger.info(f"Позиция для {symbol} уже открыта, пропускаем")
                     listing_monitor.mark_listing_processed(symbol)
                     return
+
+                # Опциональная проверка стакана перед входом
+                from src.db.settings import SettingsManager as _SM
+                with db.get_session() as session:
+                    _settings = _SM(session)
+                    check_ob = _settings.get('check_orderbook_before_entry', False)
+                    min_liq = _settings.get('min_liquidity_usdt', 1000.0)
+
+                if check_ob:
+                    logger.info(f"⏳ {symbol}: ожидание сигнала стакана (should_sell_signal)...")
+                    ob_ready = await self._wait_for_orderbook_signal(symbol, min_liq)
+                    if not ob_ready:
+                        logger.warning(f"{symbol}: стакан не готов, открываем без проверки")
 
                 # Получаем текущую цену через REST API тикер
                 ticker = await self.api_client.get_ticker(symbol)
@@ -508,6 +565,40 @@ class TradingBot:
                 except Exception:
                     pass
 
+    async def _wait_for_orderbook_signal(self, symbol: str, min_liquidity_usdt: float, timeout_sec: int = 600) -> bool:
+        """
+        Ожидать сигнала стакана (should_sell_signal) до timeout_sec секунд.
+        Подключает WS, подписывается на стакан, ждёт сигнала.
+
+        Returns:
+            True если сигнал получен, False если таймаут
+        """
+        try:
+            # Подключаем WS если не подключён
+            if not ws_client.is_connected():
+                await ws_client.connect()
+            await ws_client.subscribe_order_book(symbol)
+
+            # Запускаем WS loop если не запущен
+            if self._ws_task is None or self._ws_task.done():
+                self._ws_task = asyncio.create_task(self._websocket_listen_loop())
+                self._tasks.append(self._ws_task)
+
+            start = time.time()
+            while time.time() - start < timeout_sec:
+                order_book = ws_client.get_order_book(symbol)
+                if order_book and order_book.should_sell_signal(min_liquidity_usdt=min_liquidity_usdt):
+                    logger.info(f"🟢 {symbol}: сигнал стакана получен!")
+                    return True
+                await asyncio.sleep(1)
+
+            logger.warning(f"⏰ {symbol}: таймаут ожидания сигнала стакана ({timeout_sec}с)")
+            return False
+
+        except Exception as e:
+            logger.error(f"Ошибка ожидания сигнала стакана {symbol}: {e}")
+            return False
+
     async def _on_order_book_update(self, symbol: str, order_book: OrderBook):
         """
         Обработчик обновления стакана.
@@ -515,9 +606,20 @@ class TradingBot:
         Вход в позицию происходит мгновенно в _open_short_immediately.
         """
         try:
+            # Проверяем включён ли мониторинг стакана
+            if not self._orderbook_enabled:
+                return
+
             # Обновляем цену позиций если они есть
             if symbol not in position_manager.get_all_positions():
                 return
+
+            # Throttle: не обрабатывать чаще чем каждые N мс
+            now = time.time() * 1000
+            last = self._last_ob_update.get(symbol, 0)
+            if now - last < self._orderbook_throttle_ms:
+                return
+            self._last_ob_update[symbol] = now
 
             # Для SHORT используем best bid как цену выхода
             current_price = order_book.get_best_bid()

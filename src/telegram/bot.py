@@ -397,6 +397,23 @@ class TelegramNotifier:
 
         await self._send_to_admin(message)
 
+    async def send_listing_waiting(self, symbol: str, reason: str = ""):
+        """Уведомление об ожидании начала торгов (не ошибка)"""
+        if not self._enabled:
+            return
+
+        message = (
+            f"⏳ <b>Ожидание торгов</b>\n\n"
+            f"Монета: <code>{symbol}</code>\n"
+            f"Контракт опубликован, но торги ещё не начались.\n"
+            f"Бот ожидает начала торгов для открытия позиции.\n"
+        )
+        if reason:
+            message += f"Детали: {reason}\n"
+        message += f"Время: {_msk_now().strftime('%Y-%m-%d %H:%M:%S')}"
+
+        await self._send_to_admin(message)
+
     async def send_error(self, error_message: str):
         """Уведомление об ошибке"""
         message = (
