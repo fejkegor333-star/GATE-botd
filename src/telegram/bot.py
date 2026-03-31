@@ -122,6 +122,7 @@ class Keyboards:
         )
         builder.row(
             InlineKeyboardButton(text="🚀 Разгон", callback_data=make_callback_data("setting_edit", "acceleration")),
+            InlineKeyboardButton(text="📡 Стакан", callback_data=make_callback_data("setting_edit", "orderbook")),
         )
         builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data=make_callback_data("main")))
         return builder.as_markup()
@@ -1168,6 +1169,8 @@ class TelegramBot:
                     await self._cb_setting_edit(callback, args[0] if args else "")
                 elif action == "setting_change":
                     await self._cb_setting_change(callback, args[0] if args else "", args[1] if len(args) > 1 else "")
+                elif action == "orderbook_toggle":
+                    await self._cb_orderbook_toggle(callback, args[0] if args else "")
                 elif action == "stats":
                     await self._cb_stats(callback)
                 elif action == "contracts":
@@ -1391,6 +1394,7 @@ class TelegramBot:
             'avg_amount': ('Объем усреднения USDT', 'avg_amount_usdt', 10),
             'protection': ('Защита баланса', None, None),
             'acceleration': ('Режим разгона', None, None),
+            'orderbook': ('Мониторинг стакана', None, None),
         }
 
         if param not in param_names:
@@ -1427,6 +1431,30 @@ class TelegramBot:
                 f"/set acceleration_step_pct 15\n"
                 f"/set acceleration_max_multiplier 2.5"
             )
+        elif param == "orderbook":
+            ob_enabled = self.helpers.get_setting_value('orderbook_monitoring_enabled')
+            if ob_enabled is None:
+                ob_enabled = False
+            throttle = self.helpers.get_setting_value('orderbook_update_throttle_ms') or 500
+            check_before = self.helpers.get_setting_value('check_orderbook_before_entry')
+            if check_before is None:
+                check_before = True
+            text = (
+                f"📡 <b>Мониторинг стакана</b>\n\n"
+                f"Статус: {'✅ Вкл' if ob_enabled else '❌ Выкл'}\n"
+                f"Проверка перед входом: {'✅ Да' if check_before else '❌ Нет'}\n"
+                f"Throttle: {throttle} мс\n\n"
+                f"Для throttle: /set orderbook_update_throttle_ms 300"
+            )
+            # Кнопки toggle вместо +/-
+            builder = InlineKeyboardBuilder()
+            toggle_text = "❌ Выключить" if ob_enabled else "✅ Включить"
+            builder.row(InlineKeyboardButton(text=toggle_text, callback_data=make_callback_data("orderbook_toggle", "monitoring")))
+            check_toggle_text = "❌ Не проверять перед входом" if check_before else "✅ Проверять перед входом"
+            builder.row(InlineKeyboardButton(text=check_toggle_text, callback_data=make_callback_data("orderbook_toggle", "check_entry")))
+            builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data=make_callback_data("settings_menu")))
+            await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=builder.as_markup())
+            return
         else:
             text = f"⚙️ <b>{name}</b>\n\nТекущее значение: {current_value}\n\nИспользуйте +/- для изменения"
 
@@ -1479,6 +1507,26 @@ class TelegramBot:
             await self._cb_setting_edit(callback, param)
         else:
             await callback.answer("❌ Ошибка сохранения")
+
+    async def _cb_orderbook_toggle(self, callback: CallbackQuery, toggle_type: str):
+        """Переключение настроек стакана"""
+        if toggle_type == "monitoring":
+            current = self.helpers.get_setting_value('orderbook_monitoring_enabled')
+            new_val = not bool(current)
+            self.helpers.set_setting_value('orderbook_monitoring_enabled', new_val)
+            await callback.answer(f"📡 Мониторинг стакана: {'Вкл' if new_val else 'Выкл'}")
+        elif toggle_type == "check_entry":
+            current = self.helpers.get_setting_value('check_orderbook_before_entry')
+            if current is None:
+                current = True
+            new_val = not bool(current)
+            self.helpers.set_setting_value('check_orderbook_before_entry', new_val)
+            await callback.answer(f"📡 Проверка стакана перед входом: {'Вкл' if new_val else 'Выкл'}")
+        else:
+            await callback.answer("❌ Неизвестный параметр")
+            return
+        # Обновляем отображение
+        await self._cb_setting_edit(callback, "orderbook")
 
     async def _cb_stats(self, callback: CallbackQuery):
         """Статистика"""
@@ -1721,6 +1769,8 @@ class TelegramBot:
         accel_step = self.helpers.get_setting_value('acceleration_step_pct') or 10
         accel_max = self.helpers.get_setting_value('acceleration_max_multiplier') or 3.0
 
+        ob_enabled = self.helpers.get_setting_value('orderbook_monitoring_enabled') or False
+
         text = (
             "⚙️ <b>Настройки</b>\n\n"
             f"💵 Объем позиции: ${position_size:.0f}\n"
@@ -1733,6 +1783,7 @@ class TelegramBot:
             f"📉 Просадка: {drawdown}%\n"
             f"\n<b>Разгон:</b> {'Вкл' if accel_enabled else 'Выкл'}"
             f" (шаг {accel_step}%, макс x{accel_max:.1f})\n"
+            f"<b>Стакан:</b> {'Вкл' if ob_enabled else 'Выкл'}\n"
         )
 
         if isinstance(message, CallbackQuery):
