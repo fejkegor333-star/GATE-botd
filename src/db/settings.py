@@ -117,6 +117,16 @@ class SettingsManager:
             'type': 'bool',
             'description': 'Проверять стакан перед входом в позицию (should_sell_signal)'
         },
+        'auto_position_size': {
+            'value': 'false',
+            'type': 'bool',
+            'description': 'Авто-расчёт размера позиции (баланс * коэффициент)'
+        },
+        'position_size_coefficient': {
+            'value': '0.3',
+            'type': 'float',
+            'description': 'Коэффициент для авто-расчёта размера позиции (0.3 = 30% от свободного баланса)'
+        },
     }
 
     def __init__(self, session: Session):

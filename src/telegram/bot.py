@@ -118,6 +118,7 @@ class Keyboards:
         )
         builder.row(
             InlineKeyboardButton(text="🔢 Макс. усреднений", callback_data=make_callback_data("setting_edit", "max_avg_count")),
+            InlineKeyboardButton(text="📊 Авто-объём", callback_data=make_callback_data("setting_edit", "auto_size")),
         )
         builder.row(
             InlineKeyboardButton(text="🚀 Разгон", callback_data=make_callback_data("setting_edit", "acceleration")),
@@ -1170,6 +1171,8 @@ class TelegramBot:
                     await self._cb_setting_change(callback, args[0] if args else "", args[1] if len(args) > 1 else "")
                 elif action == "orderbook_toggle":
                     await self._cb_orderbook_toggle(callback, args[0] if args else "")
+                elif action == "auto_size_toggle":
+                    await self._cb_auto_size_toggle(callback)
                 elif action == "stats":
                     await self._cb_stats(callback)
                 elif action == "contracts":
@@ -1394,6 +1397,7 @@ class TelegramBot:
             'protection': ('Защита баланса', None, None),
             'acceleration': ('Режим разгона', None, None),
             'orderbook': ('Мониторинг стакана', None, None),
+            'auto_size': ('Авто-размер позиции', None, None),
         }
 
         if param not in param_names:
@@ -1451,6 +1455,24 @@ class TelegramBot:
             builder.row(InlineKeyboardButton(text=toggle_text, callback_data=make_callback_data("orderbook_toggle", "monitoring")))
             check_toggle_text = "❌ Не проверять перед входом" if check_before else "✅ Проверять перед входом"
             builder.row(InlineKeyboardButton(text=check_toggle_text, callback_data=make_callback_data("orderbook_toggle", "check_entry")))
+            builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data=make_callback_data("settings_menu")))
+            await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=builder.as_markup())
+            return
+        elif param == "auto_size":
+            auto_enabled = self.helpers.get_setting_value('auto_position_size') or False
+            coeff = self.helpers.get_setting_value('position_size_coefficient') or 0.3
+            manual_size = self.helpers.get_setting_value('initial_position_usdt') or 10
+            text = (
+                f"📊 <b>Авто-размер позиции</b>\n\n"
+                f"Режим: {'✅ Авто (баланс × коэфф.)' if auto_enabled else '❌ Ручной'}\n"
+                f"Коэффициент: {coeff}\n"
+                f"Ручной объём: ${manual_size:.0f}\n\n"
+                f"Авто: позиция = свободный баланс × {coeff}\n"
+                f"Для коэффициента: /set position_size_coefficient 0.2"
+            )
+            builder = InlineKeyboardBuilder()
+            toggle_text = "❌ Выключить авто" if auto_enabled else "✅ Включить авто"
+            builder.row(InlineKeyboardButton(text=toggle_text, callback_data=make_callback_data("auto_size_toggle")))
             builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data=make_callback_data("settings_menu")))
             await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=builder.as_markup())
             return
@@ -1526,6 +1548,14 @@ class TelegramBot:
             return
         # Обновляем отображение
         await self._cb_setting_edit(callback, "orderbook")
+
+    async def _cb_auto_size_toggle(self, callback: CallbackQuery):
+        """Переключение авто-размера позиции"""
+        current = self.helpers.get_setting_value('auto_position_size') or False
+        new_val = not bool(current)
+        self.helpers.set_setting_value('auto_position_size', new_val)
+        await callback.answer(f"📊 Авто-размер: {'Вкл' if new_val else 'Выкл'}")
+        await self._cb_setting_edit(callback, "auto_size")
 
     async def _cb_stats(self, callback: CallbackQuery):
         """Статистика"""
@@ -1768,11 +1798,15 @@ class TelegramBot:
         accel_max = self.helpers.get_setting_value('acceleration_max_multiplier') or 3.0
 
         ob_enabled = self.helpers.get_setting_value('orderbook_monitoring_enabled') or False
+        auto_size = self.helpers.get_setting_value('auto_position_size') or False
+        coeff = self.helpers.get_setting_value('position_size_coefficient') or 0.3
+
+        size_str = f"авто (баланс × {coeff})" if auto_size else f"${position_size:.0f}"
 
         text = (
             "⚙️ <b>Настройки</b>\n\n"
-            f"💵 Объем позиции: ${position_size:.0f}\n"
-            f"💵 Объем усреднения: ${position_size:.0f} (= позиция)\n"
+            f"💵 Объем позиции: {size_str}\n"
+            f"💵 Объем усреднения: {size_str} (= позиция)\n"
             f"🎯 TP %: {tp_pct:.1f}%\n"
             f"📊 ATH ratio: {ath_ratio:.2f}\n"
             f"📅 Дней листинг: {days}\n"

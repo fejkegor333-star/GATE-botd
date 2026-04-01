@@ -59,6 +59,33 @@ class TradingBot:
         except Exception as e:
             logger.warning(f"Ошибка загрузки настроек стакана: {e}")
 
+    async def _calculate_position_size(self) -> float:
+        """
+        Рассчитать размер позиции.
+        Если auto_position_size=True: свободный баланс * коэффициент.
+        Иначе: ручной initial_position_usdt.
+        """
+        from src.db.settings import SettingsManager
+        with db.get_session() as session:
+            settings = SettingsManager(session)
+            auto_mode = settings.get('auto_position_size', False)
+            if not auto_mode:
+                return float(settings.get('initial_position_usdt', 10.0))
+            coefficient = float(settings.get('position_size_coefficient', 0.3))
+
+        # Авто-режим: баланс * коэффициент
+        balance_data = await self.api_client.get_futures_balance()
+        available = float(balance_data.get('available', 0) or 0)
+        if available <= 0:
+            logger.warning("Авто-размер: свободный баланс = 0, используем ручной")
+            from src.db.settings import SettingsManager as _SM2
+            with db.get_session() as session:
+                return float(_SM2(session).get('initial_position_usdt', 10.0))
+
+        volume = round(available * coefficient, 2)
+        logger.info(f"Авто-размер позиции: ${available:.2f} * {coefficient} = ${volume:.2f}")
+        return volume
+
     async def _get_symbol_lock(self, symbol: str) -> asyncio.Lock:
         """Получить или создать lock для конкретного символа"""
         async with self._locks_lock:
@@ -487,11 +514,8 @@ class TradingBot:
                     listing_monitor.mark_listing_failed(symbol)
                     return
 
-                # Получаем объём позиции из БД с учётом режима разгона
-                from src.db.settings import SettingsManager
-                with db.get_session() as session:
-                    settings = SettingsManager(session)
-                    base_volume = settings.get('initial_position_usdt', 10.0)
+                # Получаем объём позиции (авто или ручной) с учётом режима разгона
+                base_volume = await self._calculate_position_size()
                 volume_usdt = acceleration_manager.calculate_volume(symbol, base_volume)
 
                 # Получаем параметры контракта для корректной проверки маржи
@@ -724,11 +748,8 @@ class TradingBot:
         try:
             avg_number, avg_level_pct = signal
 
-            # Объём усреднения = объёму первоначальной позиции
-            from src.db.settings import SettingsManager
-            with db.get_session() as session:
-                settings = SettingsManager(session)
-                volume_usdt = settings.get('initial_position_usdt', 10.0)
+            # Объём усреднения = объёму позиции (авто или ручной)
+            volume_usdt = await self._calculate_position_size()
 
             # Получаем параметры контракта для корректной проверки маржи
             contract_info = await self.api_client.get_contract_info(symbol)
@@ -882,11 +903,8 @@ class TradingBot:
             last_exit_price: Цена последнего выхода
         """
         try:
-            # Получаем объём из БД с учётом режима разгона
-            from src.db.settings import SettingsManager
-            with db.get_session() as session:
-                settings = SettingsManager(session)
-                base_volume = settings.get('initial_position_usdt', 10.0)
+            # Получаем объём (авто или ручной) с учётом режима разгона
+            base_volume = await self._calculate_position_size()
             volume_usdt = acceleration_manager.calculate_volume(symbol, base_volume)
 
             # Переоткрываем позицию сразу по цене последнего выхода
