@@ -55,7 +55,7 @@ class TradingBot:
                 settings = SettingsManager(session)
                 self._orderbook_enabled = settings.get('orderbook_monitoring_enabled', True)
                 self._orderbook_throttle_ms = settings.get('orderbook_update_throttle_ms', 100)
-            logger.info(f"Настройки стакана: enabled={self._orderbook_enabled}, throttle={self._orderbook_throttle_ms}ms")
+            logger.debug(f"Настройки стакана: enabled={self._orderbook_enabled}, throttle={self._orderbook_throttle_ms}ms")
         except Exception as e:
             logger.warning(f"Ошибка загрузки настроек стакана: {e}")
 
