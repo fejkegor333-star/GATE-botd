@@ -90,7 +90,7 @@ class Keyboards:
             keyboard=[
                 [KeyboardButton(text="📊 Статус"), KeyboardButton(text="📈 Позиции"), KeyboardButton(text="💰 Баланс")],
                 [KeyboardButton(text="⚙️ Настройки"), KeyboardButton(text="📉 PnL"), KeyboardButton(text="📜 Сделки")],
-                [KeyboardButton(text="🏥 Здоровье"), KeyboardButton(text="📋 Контракты"), KeyboardButton(text="📊 Стат")],
+                [KeyboardButton(text="🛑 Стоп"), KeyboardButton(text="▶️ Старт"), KeyboardButton(text="📋 Меню")],
             ],
             resize_keyboard=True,
             is_persistent=True,
@@ -1098,7 +1098,7 @@ class TelegramBot:
         @self.dp.message(lambda m: m.text in (
             "📊 Статус", "📈 Позиции", "💰 Баланс",
             "⚙️ Настройки", "📉 PnL", "📜 Сделки",
-            "🏥 Здоровье", "📋 Контракты", "📊 Стат",
+            "🛑 Стоп", "▶️ Старт", "📋 Меню",
         ))
         async def reply_keyboard_handler(message: Message):
             """Обработчик кнопок reply-клавиатуры"""
@@ -1118,12 +1118,38 @@ class TelegramBot:
                 await self._show_pnl(message)
             elif text == "📜 Сделки":
                 await self._show_trades(message)
-            elif text == "🏥 Здоровье":
-                await self._show_health(message)
-            elif text == "📋 Контракты":
-                await self._show_contracts(message)
-            elif text == "📊 Стат":
-                await self._show_stats(message)
+            elif text == "🛑 Стоп":
+                self.helpers.set_setting_value('max_concurrent_coins', 0)
+                await message.answer(
+                    "🛑 <b>Торговля остановлена</b>\n\n"
+                    "max_concurrent_coins = 0\n"
+                    "Новые позиции открываться не будут.",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=Keyboards.reply_keyboard()
+                )
+            elif text == "▶️ Старт":
+                current = self.helpers.get_setting_value('max_concurrent_coins')
+                if current == 0:
+                    self.helpers.set_setting_value('max_concurrent_coins', 3)
+                    await message.answer(
+                        "▶️ <b>Торговля запущена</b>\n\n"
+                        "max_concurrent_coins = 3",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=Keyboards.reply_keyboard()
+                    )
+                else:
+                    await message.answer(
+                        f"▶️ <b>Торговля уже работает</b>\n\n"
+                        f"max_concurrent_coins = {current}",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=Keyboards.reply_keyboard()
+                    )
+            elif text == "📋 Меню":
+                await message.answer(
+                    "📋 <b>Полное меню:</b>",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=Keyboards.main_menu()
+                )
 
         # ==================== CALLBACK HANDLERS ====================
         @self.dp.callback_query(lambda c: c.data)
@@ -1765,7 +1791,7 @@ class TelegramBot:
         if isinstance(message, CallbackQuery):
             await message.message.edit_text(status_text, parse_mode=ParseMode.HTML, reply_markup=Keyboards.main_menu())
         else:
-            await message.answer(status_text, parse_mode=ParseMode.HTML, reply_markup=Keyboards.main_menu())
+            await message.answer(status_text, parse_mode=ParseMode.HTML, reply_markup=Keyboards.reply_keyboard())
 
     async def _show_pnl(self, message):
         """Показать PnL"""
@@ -1781,7 +1807,7 @@ class TelegramBot:
         if isinstance(message, CallbackQuery):
             await message.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=Keyboards.main_menu())
         else:
-            await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=Keyboards.main_menu())
+            await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=Keyboards.reply_keyboard())
 
     async def _show_settings_menu(self, message):
         """Показать меню настроек"""
@@ -1832,7 +1858,7 @@ class TelegramBot:
             if isinstance(message, CallbackQuery):
                 await message.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=Keyboards.main_menu())
             else:
-                await message.answer(text, reply_markup=Keyboards.main_menu())
+                await message.answer(text, reply_markup=Keyboards.reply_keyboard())
             return
 
         lines = ["📊 <b>Активные позиции</b>"]
@@ -1856,7 +1882,7 @@ class TelegramBot:
         if isinstance(message, CallbackQuery):
             await message.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=Keyboards.main_menu())
         else:
-            await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=Keyboards.main_menu())
+            await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=Keyboards.reply_keyboard())
 
     async def _show_balance(self, message):
         """Показать баланс"""
@@ -1874,7 +1900,7 @@ class TelegramBot:
         if isinstance(message, CallbackQuery):
             await message.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=Keyboards.main_menu())
         else:
-            await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=Keyboards.main_menu())
+            await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=Keyboards.reply_keyboard())
 
     async def _show_settings(self, message: Message):
         """Показать настройки"""
@@ -2015,7 +2041,7 @@ class TelegramBot:
             await message.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=Keyboards.trades_filter())
             await message.answer()
         else:
-            await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=Keyboards.trades_filter())
+            await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=Keyboards.reply_keyboard())
 
     async def _show_health(self, message: Message):
         """Показать здоровье системы"""
