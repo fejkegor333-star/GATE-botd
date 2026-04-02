@@ -1860,6 +1860,14 @@ class TelegramBot:
                 await message.answer(text, reply_markup=Keyboards.reply_keyboard())
             return
 
+        # Получаем ATH для всех активных символов
+        ath_map = {}
+        with db.get_session() as session:
+            for symbol in positions:
+                contract = session.query(Contract).filter(Contract.symbol == symbol).first()
+                if contract and contract.ath_price and float(contract.ath_price) > 0:
+                    ath_map[symbol] = float(contract.ath_price)
+
         lines = ["📊 <b>Активные позиции</b>"]
 
         for symbol, pos in positions.items():
@@ -1869,11 +1877,15 @@ class TelegramBot:
 
             emoji = "📈" if pnl_pct > 0 else "📉"
 
+            ath = ath_map.get(symbol)
+            ath_str = f"ATH ratio: {current / ath:.2f} (ATH: {self.helpers.format_price(ath)})" if ath else "ATH: н/д"
+
             lines.append(
                 f"\n{emoji} <code>{symbol}</code>\n"
                 f"Вход: {self.helpers.format_price(entry)}\n"
                 f"Текущая: {self.helpers.format_price(current)}\n"
                 f"PnL: {pnl_pct:+.2f}%\n"
+                f"{ath_str}\n"
                 f"Усреднений: {pos.avg_count}"
             )
 
