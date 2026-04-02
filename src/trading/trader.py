@@ -429,7 +429,7 @@ class PositionManager:
         symbol: str,
         exit_price: float,
         reason: str = 'manual',
-    ) -> bool:
+    ) -> Optional[float]:
         """
         Закрыть позицию SHORT
 
@@ -438,16 +438,16 @@ class PositionManager:
 
         Args:
             symbol: Символ контракта
-            exit_price: Цена выхода
+            exit_price: Цена выхода (fallback, реальная берётся из fill_price)
             reason: Причина закрытия (manual, tp, timeout)
 
         Returns:
-            True если успешно
+            Реальная цена закрытия (fill_price) или None при ошибке
         """
         try:
             if symbol not in self._active_positions:
                 logger.warning(f"Позиция для {symbol} не найдена")
-                return False
+                return None
 
             position = self._active_positions[symbol]
 
@@ -477,7 +477,7 @@ class PositionManager:
                     )
                 if not order_result:
                     logger.error(f"Не удалось закрыть позицию на бирже для {symbol}")
-                    return False
+                    return None
                 order_id = str(order_result.get('id', ''))
                 # Используем реальную цену исполнения с биржи
                 fill_price_str = order_result.get('fill_price', '0')
@@ -505,7 +505,7 @@ class PositionManager:
 
                 if not db_position:
                     logger.error(f"Позиция {symbol} не найдена в БД")
-                    return False
+                    return None
 
                 db_position.status = 'closed'
                 db_position.current_price = exit_price
@@ -536,11 +536,11 @@ class PositionManager:
                     f"[{reason}]"
                 )
 
-                return True
+                return exit_price
 
         except Exception as e:
             logger.error(f"Ошибка закрытия позиции {symbol}: {e}")
-            return False
+            return None
 
     async def reopen_position(
         self,

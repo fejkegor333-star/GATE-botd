@@ -686,18 +686,17 @@ class BotHelpers:
             # Текущая цена
             current_price = position.current_price or position.entry_price
 
-            success = await position_manager.close_position(
+            real_exit = await position_manager.close_position(
                 symbol,
                 current_price,
                 'manual'
             )
 
-            if success:
-                # Записываем PnL
+            if real_exit is not None:
+                # Записываем PnL с реальной ценой fill
                 entry = float(position.entry_price)
-                current = float(current_price)
                 volume = float(position.total_volume_usdt)
-                pnl_pct = (entry - current) / entry * 100
+                pnl_pct = (entry - real_exit) / entry * 100
                 pnl_usdt = volume * pnl_pct / 100
                 await risk_manager.record_trade_pnl(pnl_usdt)
 

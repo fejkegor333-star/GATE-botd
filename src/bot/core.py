@@ -820,69 +820,71 @@ class TradingBot:
             if not position:
                 return False
 
-            # Закрываем позицию
-            success = await position_manager.close_position(
+            # Закрываем позицию — возвращает реальную цену fill или None
+            real_exit_price = await position_manager.close_position(
                 symbol,
                 exit_price,
                 reason,
             )
 
-            if not success:
+            if real_exit_price is None:
                 return False
 
-            if success:
-                # Вычисляем PnL для SHORT (используем Decimal для точности)
-                d_entry = Decimal(str(position.entry_price))
-                d_exit = Decimal(str(exit_price))
-                d_volume = Decimal(str(position.total_volume_usdt))
-                pnl_pct = float((d_entry - d_exit) / d_entry * 100)
-                pnl_usdt = float(d_volume * (d_entry - d_exit) / d_entry)
+            # Используем реальную цену fill для расчётов и уведомлений
+            exit_price = real_exit_price
 
-                # Записываем PnL
-                await risk_manager.record_trade_pnl(pnl_usdt)
-                update_daily_pnl(
-                    pnl=pnl_usdt,
-                    volume_usdt=float(position.total_volume_usdt),
-                    is_winning=pnl_usdt >= 0,
-                )
+            # Вычисляем PnL для SHORT (используем Decimal для точности)
+            d_entry = Decimal(str(position.entry_price))
+            d_exit = Decimal(str(exit_price))
+            d_volume = Decimal(str(position.total_volume_usdt))
+            pnl_pct = float((d_entry - d_exit) / d_entry * 100)
+            pnl_usdt = float(d_volume * (d_entry - d_exit) / d_entry)
 
-                # Вычисляем длительность позиции
-                duration_str = ""
-                if position.opened_at:
-                    delta = datetime.utcnow() - position.opened_at
-                    hours = int(delta.total_seconds() // 3600)
-                    minutes = int((delta.total_seconds() % 3600) // 60)
-                    duration_str = f"{hours}ч {minutes}мин"
+            # Записываем PnL
+            await risk_manager.record_trade_pnl(pnl_usdt)
+            update_daily_pnl(
+                pnl=pnl_usdt,
+                volume_usdt=float(position.total_volume_usdt),
+                is_winning=pnl_usdt >= 0,
+            )
 
-                logger.info(
-                    f"🔴 SHORT закрыт: {symbol} @ ${exit_price:.6f} "
-                    f"PnL: ${pnl_usdt:+.2f} ({pnl_pct:+.2f}%) "
-                    f"[{reason}]"
-                )
+            # Вычисляем длительность позиции
+            duration_str = ""
+            if position.opened_at:
+                delta = datetime.utcnow() - position.opened_at
+                hours = int(delta.total_seconds() // 3600)
+                minutes = int((delta.total_seconds() % 3600) // 60)
+                duration_str = f"{hours}ч {minutes}мин"
 
-                await self.notifier.send_position_closed(
-                    symbol,
-                    exit_price,
-                    pnl_usdt,
-                    pnl_pct,
-                    reason,
-                    duration=duration_str,
-                    total_volume=float(position.total_volume_usdt),
-                )
+            logger.info(
+                f"🔴 SHORT закрыт: {symbol} @ ${exit_price:.6f} "
+                f"PnL: ${pnl_usdt:+.2f} ({pnl_pct:+.2f}%) "
+                f"[{reason}]"
+            )
 
-                # Обновляем режим разгона
-                if reason == 'tp':
-                    acceleration_manager.on_tp_close(symbol)
-                else:
-                    acceleration_manager.on_loss_close(symbol)
+            await self.notifier.send_position_closed(
+                symbol,
+                exit_price,
+                pnl_usdt,
+                pnl_pct,
+                reason,
+                duration=duration_str,
+                total_volume=float(position.total_volume_usdt),
+            )
 
-                # Проверяем возможность переоткрытия (только после TP)
-                if reason == 'tp':
-                    await self._handle_reopen(symbol, exit_price)
+            # Обновляем режим разгона
+            if reason == 'tp':
+                acceleration_manager.on_tp_close(symbol)
+            else:
+                acceleration_manager.on_loss_close(symbol)
 
-                # Сбрасываем кулдаун при успехе
-                self._close_cooldowns.pop(symbol, None)
-                return True
+            # Проверяем возможность переоткрытия (только после TP)
+            if reason == 'tp':
+                await self._handle_reopen(symbol, exit_price)
+
+            # Сбрасываем кулдаун при успехе
+            self._close_cooldowns.pop(symbol, None)
+            return True
 
         except Exception as e:
             logger.error(f"Ошибка закрытия позиции {symbol}: {e}")
@@ -916,11 +918,12 @@ class TradingBot:
             )
 
             if position:
-                logger.info(f"🔄 SHORT переоткрыт: {symbol} @ ${last_exit_price:.6f}")
+                real_entry = float(position.entry_price)
+                logger.info(f"🔄 SHORT переоткрыт: {symbol} @ ${real_entry:.6f}")
                 await self.notifier.send_position_reopened(
                     symbol,
-                    last_exit_price,
-                    volume_usdt,
+                    real_entry,
+                    float(position.total_volume_usdt),
                 )
 
         except Exception as e:
