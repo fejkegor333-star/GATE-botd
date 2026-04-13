@@ -42,6 +42,8 @@ class TradingBot:
         self._close_cooldowns: dict[str, float] = {}  # Кулдаун после неудачного закрытия
         self._last_exchange_sync: float = 0  # Время последней синхронизации с биржей
         self._notified_listings: set[str] = set()  # Символы, о которых уже отправлено уведомление
+        self._reopen_counts: dict[str, int] = {}  # Счётчик переоткрытий за короткий период
+        self._reopen_window_start: dict[str, float] = {}  # Начало окна подсчёта переоткрытий
         # Настройки мониторинга стакана
         self._orderbook_enabled: bool = True
         self._orderbook_throttle_ms: int = 100
@@ -524,6 +526,16 @@ class TradingBot:
                 ci_maintenance = float(contract_info.get('maintenance_rate', 0.05) or 0.05) if contract_info else 0.05
                 ci_taker_fee = float(contract_info.get('taker_fee_rate', 0.00075) or 0.00075) if contract_info else 0.00075
 
+                # Перепроверка contract_type из свежих данных контракта
+                # (Gate.io может не заполнить contract_type сразу при создании)
+                if contract_info:
+                    from src.api.monitoring import _is_filtered_symbol
+                    filter_reason = _is_filtered_symbol(symbol, contract_info)
+                    if filter_reason:
+                        logger.warning(f"Контракт {symbol} отфильтрован при открытии: {filter_reason}")
+                        listing_monitor.mark_listing_processed(symbol)
+                        return
+
                 # Проверяем риск перед торговлей (с реальным плечом и ставками контракта)
                 can_trade, reason = await risk_manager.check_before_trade(
                     volume_usdt, leverage=ci_leverage,
@@ -905,6 +917,39 @@ class TradingBot:
             last_exit_price: Цена последнего выхода
         """
         try:
+            # Защита от бесконечного цикла close/reopen при высокой волатильности
+            now = time.time()
+            max_reopens_per_window = 3
+            window_seconds = 60
+
+            window_start = self._reopen_window_start.get(symbol, 0)
+            if now - window_start > window_seconds:
+                self._reopen_counts[symbol] = 0
+                self._reopen_window_start[symbol] = now
+
+            self._reopen_counts[symbol] = self._reopen_counts.get(symbol, 0) + 1
+
+            if self._reopen_counts[symbol] > max_reopens_per_window:
+                logger.warning(
+                    f"{symbol}: превышен лимит переоткрытий "
+                    f"({max_reopens_per_window} за {window_seconds}с), пропускаем"
+                )
+                return
+
+            # Проверяем текущую цену: если ушла >5% от exit — не переоткрываем
+            ticker = await self.api_client.get_ticker(symbol)
+            if ticker:
+                current_price = float(ticker.get('last', 0) or 0)
+                if current_price > 0 and last_exit_price > 0:
+                    price_deviation_pct = abs(current_price - last_exit_price) / last_exit_price * 100
+                    if price_deviation_pct > 5:
+                        logger.warning(
+                            f"{symbol}: цена ушла на {price_deviation_pct:.1f}% "
+                            f"от exit (${last_exit_price:.6f} -> ${current_price:.6f}), "
+                            f"переоткрытие отменено"
+                        )
+                        return
+
             # Получаем объём (авто или ручной) с учётом режима разгона
             base_volume = await self._calculate_position_size()
             volume_usdt = acceleration_manager.calculate_volume(symbol, base_volume)

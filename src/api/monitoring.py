@@ -23,30 +23,39 @@ STABLECOINS = {
     'USDC', 'BUSD', 'DAI', 'TUSD', 'FDUSD', 'USDD', 'PYUSD', 'USDP',
     'GUSD', 'FRAX', 'LUSD', 'CEUR', 'SUSD', 'MIM', 'UST', 'USTC',
     'EURC', 'EURT', 'USDJ', 'CUSD', 'USDN', 'USDK', 'HUSD', 'TRIBE',
+    'USD1', 'USDY', 'USDX', 'USDE',
 }
 
-# Токенизированные акции — не подходят под стратегию SHORT на новых листингах
-STOCK_TOKENS = {
-    'AAPL', 'TSLA', 'AMZN', 'GOOGL', 'META', 'MSFT', 'NVDA', 'NFLX',
-    'COIN', 'MSTR', 'GME', 'AMC', 'BABA', 'AMD', 'INTC', 'PYPL',
-    'SQ', 'UBER', 'ABNB', 'SNAP', 'PLTR',
-}
+# Не-крипто типы контрактов Gate.io (поле contract_type из API)
+NON_CRYPTO_CONTRACT_TYPES = {'stocks', 'indices', 'metals', 'commodities', 'forex'}
 
 
-def _is_filtered_symbol(symbol: str) -> str | None:
+def _is_filtered_symbol(symbol: str, contract_data: dict | None = None) -> str | None:
     """
-    Проверить, нужно ли отфильтровать символ (стейблкоин или акция).
+    Проверить, нужно ли отфильтровать символ.
+
+    Фильтрует:
+    - Не-крипто контракты (акции, индексы, металлы, товары, форекс) по полю contract_type из API
+    - Стейблкоины по хардкод-списку
+
+    Args:
+        symbol: Имя контракта (например, "TSM_USDT")
+        contract_data: Данные контракта из API (содержит поле contract_type)
 
     Returns:
         Причина фильтрации или None если символ допустим.
     """
+    # Проверяем contract_type из API (акции, индексы, металлы, товары, форекс)
+    if contract_data:
+        contract_type = contract_data.get('contract_type', '')
+        if contract_type in NON_CRYPTO_CONTRACT_TYPES:
+            return f'{contract_type} ({symbol.split("_")[0]})'
+
     # Извлекаем base currency: "USDC_USDT" -> "USDC"
     base = symbol.split('_')[0] if '_' in symbol else symbol
 
     if base in STABLECOINS:
         return f'stablecoin ({base})'
-    if base in STOCK_TOKENS:
-        return f'stock token ({base})'
     return None
 
 
@@ -61,6 +70,9 @@ class ListingMonitor:
         self._processing_symbols: Set[str] = set()  # Символы в процессе обработки
         self._on_new_listing_callbacks: List = []
         self._retry_after: Dict[str, float] = {}  # symbol -> timestamp когда можно повторить
+        self._retry_counts: Dict[str, int] = {}  # symbol -> количество неудачных попыток
+        self._max_retries: int = 10  # Макс попыток перед permanent failure
+        self._last_days_limit: Optional[int] = None  # Отслеживаем изменение настройки
 
     def on_new_listing(self, callback):
         """Зарегистрировать callback на новый листинг: async def callback(symbol, contract_data)"""
@@ -76,6 +88,7 @@ class ListingMonitor:
 
         # Загружаем известные символы из БД
         await self._load_known_symbols()
+        self._last_days_limit = self._get_listing_days_limit()
 
         # Запускаем задачу мониторинга
         self._task = asyncio.create_task(self._monitor_loop())
@@ -103,6 +116,7 @@ class ListingMonitor:
         self._processing_symbols.discard(symbol)
         self._known_symbols.add(symbol)
         self._retry_after.pop(symbol, None)
+        self._retry_counts.pop(symbol, None)
 
     def reset_symbol(self, symbol: str):
         """Сбросить символ для повторной обработки (после внешнего закрытия)"""
@@ -121,13 +135,22 @@ class ListingMonitor:
             retry_minutes: Через сколько минут повторить (по умолчанию 5).
         """
         self._processing_symbols.discard(symbol)
-        if permanent:
+
+        # Считаем количество неудачных попыток
+        self._retry_counts[symbol] = self._retry_counts.get(symbol, 0) + 1
+        retry_count = self._retry_counts[symbol]
+
+        if permanent or retry_count >= self._max_retries:
             self._known_symbols.add(symbol)
             self._retry_after.pop(symbol, None)
-            logger.info(f"Контракт {symbol} помечен как окончательно неудачный, повтор не будет")
+            self._retry_counts.pop(symbol, None)
+            if retry_count >= self._max_retries:
+                logger.warning(f"Контракт {symbol}: исчерпаны попытки ({retry_count}/{self._max_retries}), больше не повторяем")
+            else:
+                logger.info(f"Контракт {symbol} помечен как окончательно неудачный, повтор не будет")
         else:
             self._retry_after[symbol] = time.time() + retry_minutes * 60
-            logger.info(f"Контракт {symbol}: повтор через {retry_minutes} мин")
+            logger.info(f"Контракт {symbol}: попытка {retry_count}/{self._max_retries}, повтор через {retry_minutes} мин")
 
     def _get_listing_days_limit(self) -> int:
         """Получить лимит дней с листинга из настроек БД"""
@@ -180,6 +203,13 @@ class ListingMonitor:
     async def _check_listings(self):
         """Проверить новые листинги"""
         try:
+            # Проверяем, не изменился ли days_since_listing_limit
+            current_days_limit = self._get_listing_days_limit()
+            if self._last_days_limit is not None and current_days_limit != self._last_days_limit:
+                logger.info(f"🔄 Лимит дней изменён: {self._last_days_limit} → {current_days_limit}, сброс кеша контрактов")
+                await self._load_known_symbols()
+            self._last_days_limit = current_days_limit
+
             # Получаем контракты из API
             contracts_data = await self.api_client.fetch_contracts()
 
@@ -216,8 +246,8 @@ class ListingMonitor:
                     # Cooldown истёк — убираем и пробуем снова
                     del self._retry_after[symbol]
 
-                # Фильтруем стейблкоины и токенизированные акции
-                filter_reason = _is_filtered_symbol(symbol)
+                # Фильтруем не-крипто контракты (акции, индексы и т.д.) и стейблкоины
+                filter_reason = _is_filtered_symbol(symbol, contract_data)
                 if filter_reason:
                     logger.info(f"Контракт {symbol} отфильтрован: {filter_reason}")
                     self._known_symbols.add(symbol)
