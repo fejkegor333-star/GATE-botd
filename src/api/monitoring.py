@@ -31,61 +31,47 @@ STABLECOINS = {
 # Не-крипто типы контрактов Gate.io (поле contract_type из API)
 NON_CRYPTO_CONTRACT_TYPES = {'stocks', 'indices', 'metals', 'commodities', 'forex'}
 
-# Известные тикеры акций (US, EU, Asia) и ETF — только однозначные (4+ буквы или явно не крипто).
-# НЕ включаем короткие/неоднозначные тикеры (BP, V, F, T, GE, C, U, MA, CFG, JD, LI, IQ),
-# т.к. они могут быть крипто-токенами на Gate.io (BP, CFG уже торгуются как крипто).
-# Для коротких тикеров полагаемся на contract_type из API + recheck loop.
+# Минимальный блэклист — только те символы, которые мы РЕАЛЬНО видели как акции
+# с пустым contract_type на Gate.io. Не добавляем тикеры, которые могут быть крипто-токенами!
+#
+# Главная защита — contract_type + is_pre_market из API.
+# Этот блэклист — резерв для случаев когда Gate.io вообще не проставил тип
+# (наблюдалось для китайских акций GEELY, KUAISHOU, ZHIPU, XUNCE).
+#
+# ВАЖНО: НЕ добавлять короткие/общие тикеры, т.к. многие из них реальная крипта:
+# DASH (Dash coin), CVX (Convex), DIA (DIA Oracle), GAS (Neo Gas), CAT (мем),
+# COIN (может быть мем), NET (может быть крипто), DASH, MSTR (может быть мем),
+# BP (мы видели как pre_market stock — поймает is_pre_market), CFG (Centrifuge крипто),
+# UP (мем), F, T, V, MA, GE, JD, LI и т.д.
 KNOWN_STOCK_TICKERS = {
-    # US Tech (4+ буквы — однозначные)
-    'AAPL', 'MSFT', 'GOOG', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'NFLX',
-    'INTC', 'ORCL', 'ADBE', 'CSCO', 'QCOM', 'AVGO', 'AMAT', 'LRCX', 'KLAC',
-    'MRVL', 'ASML', 'COIN', 'MSTR', 'PYPL', 'PAYP', 'SHOP', 'SNOW', 'PLTR',
-    'CRWD', 'OKTA', 'TEAM', 'WDAY', 'INTU', 'ADSK', 'UBER', 'LYFT', 'ABNB',
-    'DASH', 'PINS', 'SNAP', 'SPOT', 'RBLX', 'RDDT', 'RDDTON', 'COHR', 'LITE',
-    'SNDK',
-    # Asian tech / EV (длинные, явно акции)
-    'BABA', 'BIDU', 'PDD', 'XPEV', 'TME', 'BILI', 'NTES', 'MELI', 'SHEIN',
-    'KUAISHOU', 'GEELY', 'XIAOMI', 'ZHIPU', 'XUNCE', 'DFDV', 'DFDVX',
-    # US Finance / Industrial (4+ буквы)
-    'WMT', 'COST', 'NOC', 'LMT', 'HON', 'CAT', 'EMR', 'ROK', 'CMI',
-    'JPM', 'BAC', 'WFC', 'BLK', 'SCHW', 'AXP', 'SOFI', 'AFRM', 'HOOD', 'IBKR',
-    'UNH', 'JNJ', 'PFE', 'ABBV', 'MRK', 'LLY', 'TMO', 'ABT', 'DHR', 'BMY',
-    'AMGN', 'GILD', 'BIIB', 'REGN', 'VRTX', 'MRNA',
-    'XOM', 'CVX', 'COP', 'PSX', 'VLO', 'EOG',
-    'PEP', 'KMB', 'STZ', 'RIVN', 'LCID', 'SPACEX',
-    'CMCSA', 'TMUS', 'CHTR', 'WBD',
-    # 3-буквенные явные акции (часто торгуются на Gate)
-    'TSM', 'ARM', 'IBM', 'AMD', 'SQX', 'NET', 'DDG', 'SLB',
-    # ETF iShares / Country / Sector (часто 3-4 буквы)
-    'EWY', 'EWJ', 'EWT', 'EWZ', 'EWA', 'EWC', 'EWG', 'EWH', 'EWI', 'EWL',
-    'EWP', 'EWQ', 'EWS', 'EWU', 'EWW', 'EZA', 'KWEB', 'INDA', 'FXI', 'MCHI',
-    'SPY', 'QQQ', 'IWM', 'DIA', 'VOO', 'VTI', 'VEA', 'VWO', 'EEM', 'IEFA',
-    'GLD', 'SLV', 'IAU', 'USO', 'UNG', 'TLT', 'IEF', 'SHY', 'HYG', 'LQD',
-    'XLF', 'XLK', 'XLE', 'XLV', 'XLY', 'XLP', 'XLI', 'XLU', 'XLB', 'XLRE',
-    'TIP', 'ARKK', 'ARKG', 'ARKQ', 'ARKW', 'ARKF',
-    # Boeing (BA) — но не короткий, проверяю отдельно
-    # Не добавляю: BP, V, F, T, GE, C, U, MA, CFG, JD, LI, IQ — пересекаются с крипто
+    # Китайские акции, которые реально проскочили (Gate.io не проставил contract_type)
+    'GEELY', 'KUAISHOU', 'ZHIPU', 'XUNCE', 'XIAOMI', 'BABA', 'KWEB',
+    # SPACEX — мы видели как акция (потеряли $8 на ней)
+    'SPACEX',
+    # X-варианты явных акций (поймаются также паттерном, дублируем для надёжности)
+    'TSLAX', 'MSTRX', 'NVDAX', 'METAX', 'GOOGLX', 'AAPLX', 'MSFTX', 'COINX',
+    'AMDX', 'AMZNX', 'NFLXX', 'GOOGX',
 }
 
-# Известные индексы (часто содержат цифры)
+# Индексы — те что мы реально видели + индексы с цифрами ловит паттерн ниже.
+# НЕ включаем VIX (может быть мем), GAS (Neo Gas крипто), CL/SI/PL/PA (двухбуквенные опасно).
 KNOWN_INDICES = {
-    'GER40', 'DAX40', 'US30', 'US100', 'US500', 'SPX500', 'NDX100', 'NDX',
+    'GER40', 'DAX40', 'US30', 'US100', 'US500', 'SPX500', 'NDX100',
     'HK50', 'HSI', 'JP225', 'NIK225', 'UK100', 'FR40', 'EU50', 'STOXX50',
     'AUS200', 'CHN50', 'IND50', 'CAN60', 'BR50', 'KOR200',
-    'VIX', 'GVZ', 'OVX', 'BVZ', 'VXN', 'RVX',
+    'GVZ', 'OVX', 'BVZ', 'VXN', 'RVX', 'HSCHKD',
 }
 
-# Известные товары (commodities)
+# Товары — НЕ ВКЛЮЧАЕМ короткие тикеры (NG, CL, HG, GC, SI, PL, PA, GAS — все могут быть крипто).
+# Полагаемся на API contract_type для commodities.
 KNOWN_COMMODITIES = {
-    'NG', 'CL', 'HG', 'GC', 'SI', 'PL', 'PA', 'HO', 'RB', 'NQ',
-    'WTI', 'BRENT', 'GAS', 'OIL', 'CORN', 'WHEAT', 'SOYB', 'COCOA',
-    'COFFEE', 'COTTON', 'SUGAR',
+    'WTI', 'BRENT',
 }
 
-# Известные металлы (на Gate.io обычно X-префикс)
+# Металлы — X-префиксы (XAU, XAG и т.д.) и явные металлические токены.
 KNOWN_METALS = {
-    'XAU', 'XAG', 'XPT', 'XPD', 'XCU', 'XAL', 'XPB', 'XNI', 'XSN', 'XZN',
-    'XAUT', 'PAXG', 'IAU', 'SLV', 'SLVON',
+    'XAU', 'XAG', 'XPT', 'XPD', 'XCU', 'XAL', 'XPB', 'XNI',
+    'XAUT', 'PAXG', 'IAU', 'SLVON',
 }
 
 # Объединённый блэклист известных не-крипто тикеров
