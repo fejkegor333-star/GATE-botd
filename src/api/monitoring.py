@@ -4,6 +4,7 @@
 """
 import asyncio
 import logging
+import re
 import time
 from typing import Dict, List, Optional, Set
 from datetime import datetime, timedelta
@@ -23,20 +24,89 @@ STABLECOINS = {
     'USDC', 'BUSD', 'DAI', 'TUSD', 'FDUSD', 'USDD', 'PYUSD', 'USDP',
     'GUSD', 'FRAX', 'LUSD', 'CEUR', 'SUSD', 'MIM', 'UST', 'USTC',
     'EURC', 'EURT', 'USDJ', 'CUSD', 'USDN', 'USDK', 'HUSD', 'TRIBE',
-    'USD1', 'USDY', 'USDX', 'USDE',
+    'USD1', 'USDY', 'USDX', 'USDE', 'RLUSD', 'EURI', 'USDB', 'USDQ',
+    'GHO', 'CRVUSD', 'OUSD', 'SDAI', 'YUSD', 'XUSD',
 }
 
 # Не-крипто типы контрактов Gate.io (поле contract_type из API)
 NON_CRYPTO_CONTRACT_TYPES = {'stocks', 'indices', 'metals', 'commodities', 'forex'}
+
+# Известные тикеры акций (US, EU, Asia) и ETF — только однозначные (4+ буквы или явно не крипто).
+# НЕ включаем короткие/неоднозначные тикеры (BP, V, F, T, GE, C, U, MA, CFG, JD, LI, IQ),
+# т.к. они могут быть крипто-токенами на Gate.io (BP, CFG уже торгуются как крипто).
+# Для коротких тикеров полагаемся на contract_type из API + recheck loop.
+KNOWN_STOCK_TICKERS = {
+    # US Tech (4+ буквы — однозначные)
+    'AAPL', 'MSFT', 'GOOG', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'NFLX',
+    'INTC', 'ORCL', 'ADBE', 'CSCO', 'QCOM', 'AVGO', 'AMAT', 'LRCX', 'KLAC',
+    'MRVL', 'ASML', 'COIN', 'MSTR', 'PYPL', 'PAYP', 'SHOP', 'SNOW', 'PLTR',
+    'CRWD', 'OKTA', 'TEAM', 'WDAY', 'INTU', 'ADSK', 'UBER', 'LYFT', 'ABNB',
+    'DASH', 'PINS', 'SNAP', 'SPOT', 'RBLX', 'RDDT', 'RDDTON', 'COHR', 'LITE',
+    'SNDK',
+    # Asian tech / EV (длинные, явно акции)
+    'BABA', 'BIDU', 'PDD', 'XPEV', 'TME', 'BILI', 'NTES', 'MELI', 'SHEIN',
+    'KUAISHOU', 'GEELY', 'XIAOMI', 'ZHIPU', 'XUNCE', 'DFDV', 'DFDVX',
+    # US Finance / Industrial (4+ буквы)
+    'WMT', 'COST', 'NOC', 'LMT', 'HON', 'CAT', 'EMR', 'ROK', 'CMI',
+    'JPM', 'BAC', 'WFC', 'BLK', 'SCHW', 'AXP', 'SOFI', 'AFRM', 'HOOD', 'IBKR',
+    'UNH', 'JNJ', 'PFE', 'ABBV', 'MRK', 'LLY', 'TMO', 'ABT', 'DHR', 'BMY',
+    'AMGN', 'GILD', 'BIIB', 'REGN', 'VRTX', 'MRNA',
+    'XOM', 'CVX', 'COP', 'PSX', 'VLO', 'EOG',
+    'PEP', 'KMB', 'STZ', 'RIVN', 'LCID', 'SPACEX',
+    'CMCSA', 'TMUS', 'CHTR', 'WBD',
+    # 3-буквенные явные акции (часто торгуются на Gate)
+    'TSM', 'ARM', 'IBM', 'AMD', 'SQX', 'NET', 'DDG', 'SLB',
+    # ETF iShares / Country / Sector (часто 3-4 буквы)
+    'EWY', 'EWJ', 'EWT', 'EWZ', 'EWA', 'EWC', 'EWG', 'EWH', 'EWI', 'EWL',
+    'EWP', 'EWQ', 'EWS', 'EWU', 'EWW', 'EZA', 'KWEB', 'INDA', 'FXI', 'MCHI',
+    'SPY', 'QQQ', 'IWM', 'DIA', 'VOO', 'VTI', 'VEA', 'VWO', 'EEM', 'IEFA',
+    'GLD', 'SLV', 'IAU', 'USO', 'UNG', 'TLT', 'IEF', 'SHY', 'HYG', 'LQD',
+    'XLF', 'XLK', 'XLE', 'XLV', 'XLY', 'XLP', 'XLI', 'XLU', 'XLB', 'XLRE',
+    'TIP', 'ARKK', 'ARKG', 'ARKQ', 'ARKW', 'ARKF',
+    # Boeing (BA) — но не короткий, проверяю отдельно
+    # Не добавляю: BP, V, F, T, GE, C, U, MA, CFG, JD, LI, IQ — пересекаются с крипто
+}
+
+# Известные индексы (часто содержат цифры)
+KNOWN_INDICES = {
+    'GER40', 'DAX40', 'US30', 'US100', 'US500', 'SPX500', 'NDX100', 'NDX',
+    'HK50', 'HSI', 'JP225', 'NIK225', 'UK100', 'FR40', 'EU50', 'STOXX50',
+    'AUS200', 'CHN50', 'IND50', 'CAN60', 'BR50', 'KOR200',
+    'VIX', 'GVZ', 'OVX', 'BVZ', 'VXN', 'RVX',
+}
+
+# Известные товары (commodities)
+KNOWN_COMMODITIES = {
+    'NG', 'CL', 'HG', 'GC', 'SI', 'PL', 'PA', 'HO', 'RB', 'NQ',
+    'WTI', 'BRENT', 'GAS', 'OIL', 'CORN', 'WHEAT', 'SOYB', 'COCOA',
+    'COFFEE', 'COTTON', 'SUGAR',
+}
+
+# Известные металлы (на Gate.io обычно X-префикс)
+KNOWN_METALS = {
+    'XAU', 'XAG', 'XPT', 'XPD', 'XCU', 'XAL', 'XPB', 'XNI', 'XSN', 'XZN',
+    'XAUT', 'PAXG', 'IAU', 'SLV', 'SLVON',
+}
+
+# Объединённый блэклист известных не-крипто тикеров
+KNOWN_NON_CRYPTO = (
+    KNOWN_STOCK_TICKERS | KNOWN_INDICES | KNOWN_COMMODITIES | KNOWN_METALS
+)
+
+# Регэксп для X-суффикса (TSLAX, MSFTX, NVDAX, COINX, MSTRX, METAX, GOOGLX, AAPLX)
+# Минимум 3 буквы + X в конце. Но НЕ перед известными крипто-токенами.
+_X_SUFFIX_RE = re.compile(r'^[A-Z]{3,8}X$')
 
 
 def _is_filtered_symbol(symbol: str, contract_data: dict | None = None) -> str | None:
     """
     Проверить, нужно ли отфильтровать символ.
 
-    Фильтрует:
-    - Не-крипто контракты (акции, индексы, металлы, товары, форекс) по полю contract_type из API
-    - Стейблкоины по хардкод-списку
+    Многослойная защита:
+    1. contract_type из API (stocks, indices, metals, commodities, forex)
+    2. Хардкод-список стейблкоинов
+    3. Известные тикеры акций/индексов/металлов/товаров (когда Gate.io не проставил contract_type)
+    4. Эвристики по паттернам имён (X-суффикс, цифры в конце)
 
     Args:
         symbol: Имя контракта (например, "TSM_USDT")
@@ -45,17 +115,39 @@ def _is_filtered_symbol(symbol: str, contract_data: dict | None = None) -> str |
     Returns:
         Причина фильтрации или None если символ допустим.
     """
-    # Проверяем contract_type из API (акции, индексы, металлы, товары, форекс)
+    # Извлекаем base currency: "USDC_USDT" -> "USDC"
+    base = symbol.split('_')[0].upper() if '_' in symbol else symbol.upper()
+
+    # СЛОЙ 1: contract_type из API
     if contract_data:
         contract_type = contract_data.get('contract_type', '')
         if contract_type in NON_CRYPTO_CONTRACT_TYPES:
-            return f'{contract_type} ({symbol.split("_")[0]})'
+            return f'{contract_type} ({base}) [API]'
 
-    # Извлекаем base currency: "USDC_USDT" -> "USDC"
-    base = symbol.split('_')[0] if '_' in symbol else symbol
+        # СЛОЙ 1b: is_pre_market — pre-market доступно только для акций
+        if contract_data.get('is_pre_market') is True:
+            return f'pre_market_stock ({base}) [API]'
 
+    # СЛОЙ 2: Стейблкоины
     if base in STABLECOINS:
         return f'stablecoin ({base})'
+
+    # СЛОЙ 3: Известные тикеры акций/индексов/металлов/товаров
+    if base in KNOWN_NON_CRYPTO:
+        return f'known_non_crypto ({base}) [blacklist]'
+
+    # СЛОЙ 4a: X-суффикс паттерн (TSLAX, MSFTX, NVDAX, COINX, AAPLX, METAX, GOOGLX)
+    # Если базовое имя без X тоже известная акция — точно акция
+    if _X_SUFFIX_RE.match(base) and len(base) >= 4:
+        base_without_x = base[:-1]
+        if base_without_x in KNOWN_NON_CRYPTO:
+            return f'stock_x_variant ({base} -> {base_without_x}) [pattern]'
+
+    # СЛОЙ 4b: Индексы с цифрами в конце (GER40, US30, HK50, JP225)
+    # Паттерн: 2-5 букв + 2-3 цифры
+    if re.match(r'^[A-Z]{2,5}\d{2,3}$', base):
+        return f'index_pattern ({base}) [pattern]'
+
     return None
 
 
@@ -72,6 +164,7 @@ class ListingMonitor:
         self._retry_after: Dict[str, float] = {}  # symbol -> timestamp когда можно повторить
         self._retry_counts: Dict[str, int] = {}  # symbol -> количество неудачных попыток
         self._max_retries: int = 10  # Макс попыток перед permanent failure
+        self._pending_type_check: Dict[str, float] = {}  # symbol -> timestamp когда перепроверить contract_type
         self._last_days_limit: Optional[int] = None  # Отслеживаем изменение настройки
 
     def on_new_listing(self, callback):
@@ -252,6 +345,36 @@ class ListingMonitor:
                     logger.info(f"Контракт {symbol} отфильтрован: {filter_reason}")
                     self._known_symbols.add(symbol)
                     continue
+
+                # ЗАЩИТА: если contract_type пустой — отложить решение на 5 мин,
+                # дать Gate.io время проставить тип (иначе акции с пустым типом проскакивают)
+                contract_type = contract_data.get('contract_type', '')
+                if contract_type == '' and symbol not in self._pending_type_check:
+                    # Узнаём возраст контракта
+                    create_time = contract_data.get('create_time', 0)
+                    age_seconds = time.time() - int(create_time) if create_time else 0
+                    # Только для свежих контрактов (< 30 минут) — откладываем
+                    if age_seconds < 1800:
+                        self._pending_type_check[symbol] = time.time() + 300  # +5 минут
+                        logger.info(
+                            f"⏳ Контракт {symbol}: contract_type пустой, "
+                            f"возраст {int(age_seconds/60)} мин — отложено на 5 мин для перепроверки"
+                        )
+                        continue
+
+                # Если уже в pending — проверяем не пора ли
+                if symbol in self._pending_type_check:
+                    if time.time() < self._pending_type_check[symbol]:
+                        continue  # Ещё ждём
+                    # Время вышло — проверяем заново через индивидуальный API
+                    del self._pending_type_check[symbol]
+                    fresh_info = await self.api_client.get_contract_info(symbol)
+                    if fresh_info:
+                        fresh_filter = _is_filtered_symbol(symbol, fresh_info)
+                        if fresh_filter:
+                            logger.info(f"Контракт {symbol} отфильтрован после задержки: {fresh_filter}")
+                            self._known_symbols.add(symbol)
+                            continue
 
                 # Проверяем create_time (время создания контракта)
                 # launch_time в Gate.io API - это время экспирации, а не листинга!

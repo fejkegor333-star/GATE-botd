@@ -151,6 +151,7 @@ class TradingBot:
                 asyncio.create_task(self._positions_monitor_loop()),
                 asyncio.create_task(self._cleanup_loop()),
                 asyncio.create_task(self._ath_update_loop()),
+                asyncio.create_task(self._non_crypto_recheck_loop()),
             ]
 
             # Telegram бот (опционально)
@@ -294,13 +295,63 @@ class TradingBot:
                         await self.api_client.update_contract_ath(symbol)
                     except Exception as e:
                         logger.error(f"Ошибка обновления ATH для {symbol}: {e}")
-                
+
                 # Обновляем раз в час
                 await asyncio.sleep(3600)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Ошибка в цикле обновления ATH: {e}")
+                await asyncio.sleep(300)
+
+    async def _non_crypto_recheck_loop(self):
+        """
+        Цикл перепроверки активных позиций на акции/стейблы/не-крипто.
+        Gate.io иногда проставляет contract_type не сразу при создании контракта,
+        а через минуты/часы. Эта проверка автоматически закроет позицию,
+        если открытый контракт оказался акцией/индексом/металлом и т.д.
+        """
+        from src.api.monitoring import _is_filtered_symbol
+        # Первая проверка через 5 минут после старта (даём время загрузиться)
+        await asyncio.sleep(300)
+        while self._running:
+            try:
+                positions = position_manager.get_all_positions()
+                for symbol in list(positions.keys()):
+                    try:
+                        contract_info = await self.api_client.get_contract_info(symbol)
+                        if not contract_info:
+                            continue
+                        filter_reason = _is_filtered_symbol(symbol, contract_info)
+                        if filter_reason:
+                            logger.warning(
+                                f"⚠️ Позиция {symbol} оказалась не-крипто: {filter_reason}. "
+                                f"Принудительное закрытие."
+                            )
+                            # Получаем текущую цену
+                            ticker = await self.api_client.get_ticker(symbol)
+                            if ticker:
+                                price = float(ticker.get('last', 0) or 0)
+                                if price > 0:
+                                    await self._handle_close_signal(
+                                        symbol, price, 'non_crypto_filter'
+                                    )
+                                    try:
+                                        await self.notifier.send_error(
+                                            f"🚫 {symbol}: позиция закрыта — "
+                                            f"оказалась не-крипто ({filter_reason})"
+                                        )
+                                    except Exception:
+                                        pass
+                    except Exception as e:
+                        logger.error(f"Ошибка перепроверки {symbol}: {e}")
+
+                # Перепроверяем каждые 10 минут
+                await asyncio.sleep(600)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Ошибка в цикле перепроверки не-крипто: {e}")
                 await asyncio.sleep(300)
 
     async def _telegram_polling(self):
