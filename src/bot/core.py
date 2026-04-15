@@ -883,6 +883,42 @@ class TradingBot:
             if not position:
                 return False
 
+            # ЗАЩИТА ОТ СЛИППАЖА: перед TP-закрытием проверить свежую цену через тикер.
+            # Если цена уже не в TP-зоне (отскочила вверх) — сигнал устарел, не закрываем.
+            # Это предотвращает закрытия типа: "вижу цену $0.64, пытаюсь закрыть, а фактически закрываюсь по $0.67".
+            if reason == 'tp':
+                try:
+                    ticker = await self.api_client.get_ticker(symbol)
+                    if ticker:
+                        live_price = float(ticker.get('last', 0) or 0)
+                        live_ask = float(ticker.get('ask1', 0) or 0) or live_price
+                        if live_price > 0:
+                            entry = float(position.entry_price)
+                            # Для SHORT: закрываемся покупкой по ask. Проверяем, что ask
+                            # всё ещё ниже entry * (1 - TP*0.5/100), т.е. сохранилось >=50% от TP.
+                            # Это допускает небольшой отскок, но блокирует закрытия когда
+                            # цена уже выше TP уровня (stale signal от WebSocket).
+                            try:
+                                from src.db.settings import SettingsManager
+                                with db.get_session() as _s:
+                                    tp_pct = float(SettingsManager(_s).get('take_profit_pct', 2.0))
+                            except Exception:
+                                tp_pct = 2.0
+                            min_discount = tp_pct * 0.5 / 100  # Минимум 50% от TP должно сохраниться
+                            threshold = entry * (1 - min_discount)
+                            check_price = live_ask if live_ask > 0 else live_price
+                            if check_price > threshold:
+                                drift_pct = (check_price - exit_price) / exit_price * 100
+                                logger.warning(
+                                    f"⏸️ {symbol}: TP сигнал устарел — "
+                                    f"сигнальная цена ${exit_price:.6f}, live ask ${check_price:.6f} "
+                                    f"(drift +{drift_pct:.2f}%). Закрытие отменено, ждём следующий сигнал."
+                                )
+                                return False
+                except Exception as e:
+                    logger.warning(f"Не удалось получить свежую цену для {symbol} перед закрытием: {e}")
+                    # Продолжаем закрытие если тикер недоступен
+
             # Закрываем позицию — возвращает реальную цену fill или None
             real_exit_price = await position_manager.close_position(
                 symbol,
