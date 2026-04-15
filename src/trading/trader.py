@@ -429,6 +429,7 @@ class PositionManager:
         symbol: str,
         exit_price: float,
         reason: str = 'manual',
+        limit_price: Optional[float] = None,
     ) -> Optional[float]:
         """
         Закрыть позицию SHORT
@@ -440,9 +441,13 @@ class PositionManager:
             symbol: Символ контракта
             exit_price: Цена выхода (fallback, реальная берётся из fill_price)
             reason: Причина закрытия (manual, tp, timeout)
+            limit_price: Если указан — использовать LIMIT IOC ордер на этой цене
+                         (защита от проскальзывания). Если None — рыночный IOC.
+                         Для TP: передавать entry_price * (1 - TP%/100).
 
         Returns:
-            Реальная цена закрытия (fill_price) или None при ошибке
+            Реальная цена закрытия (fill_price) или None при ошибке.
+            None также когда лимитный ордер не исполнился (цена отскочила).
         """
         try:
             if symbol not in self._active_positions:
@@ -453,12 +458,32 @@ class PositionManager:
 
             # Закрываем на бирже
             order_id = None
+            # Цена для ордера: "0" = рыночный, специфичная = лимитный
+            price_str = "0"
+            if limit_price is not None and limit_price > 0:
+                # Округляем к precision контракта
+                try:
+                    contract_info = await self.api_client.get_contract_info(symbol)
+                    if contract_info:
+                        price_round = float(contract_info.get('order_price_round', 0) or 0)
+                        if price_round > 0:
+                            # Для SHORT close (BUY) округляем ВВЕРХ (не хуже для нас)
+                            import math
+                            limit_price = math.ceil(limit_price / price_round) * price_round
+                except Exception as e:
+                    logger.warning(f"Не удалось получить price_round для {symbol}: {e}")
+                # Форматируем с нужным количеством знаков
+                price_str = f"{limit_price:.10f}".rstrip('0').rstrip('.')
+                if not price_str or price_str == '0':
+                    price_str = str(limit_price)
+                logger.info(f"Лимитное закрытие {symbol}: price={price_str}")
+
             if not config.dry_run:
                 # Сначала пробуем close=True (single mode)
                 order_result = await self.api_client.place_futures_order(
                     contract=symbol,
                     size=0,
-                    price="0",
+                    price=price_str,
                     tif="ioc",
                     close=True,
                 )
@@ -469,7 +494,7 @@ class PositionManager:
                     order_result = await self.api_client.place_futures_order(
                         contract=symbol,
                         size=0,
-                        price="0",
+                        price=price_str,
                         tif="ioc",
                         close=False,
                         reduce_only=True,
@@ -481,8 +506,22 @@ class PositionManager:
                 order_id = str(order_result.get('id', ''))
                 # Используем реальную цену исполнения с биржи
                 fill_price_str = order_result.get('fill_price', '0')
-                if fill_price_str and float(fill_price_str) > 0:
-                    exit_price = float(fill_price_str)
+                left_str = order_result.get('left', '0')
+                fill_price_val = float(fill_price_str) if fill_price_str else 0.0
+                left_val = abs(float(left_str)) if left_str else 0.0
+
+                # Если лимитный ордер не исполнился (fill_price=0 или left>0) — не закрываем в БД
+                if limit_price is not None:
+                    if fill_price_val <= 0 or left_val > 0:
+                        logger.info(
+                            f"⏸️ Лимитное закрытие {symbol} не исполнено "
+                            f"(fill_price={fill_price_val}, left={left_val}) — "
+                            f"цена отскочила выше {limit_price}, ждём следующий сигнал"
+                        )
+                        return None
+
+                if fill_price_val > 0:
+                    exit_price = fill_price_val
                     logger.info(f"Реальная цена закрытия {symbol}: ${exit_price:.6f}")
             else:
                 logger.info(f"[DRY_RUN] Закрытие {symbol} @ ${exit_price:.6f} (причина: {reason})")
