@@ -67,15 +67,18 @@ class Keyboards:
         )
         builder.row(
             InlineKeyboardButton(text="📜 Сделки", callback_data=make_callback_data("trades")),
-            InlineKeyboardButton(text="🏥 Здоровье", callback_data=make_callback_data("health")),
-        )
-        builder.row(
-            InlineKeyboardButton(text="🚫/✅ Списки", callback_data=make_callback_data("lists_menu")),
             InlineKeyboardButton(text="📊 Статистика", callback_data=make_callback_data("stats")),
         )
         builder.row(
+            InlineKeyboardButton(text="🚫/✅ Списки", callback_data=make_callback_data("lists_menu")),
             InlineKeyboardButton(text="📥 Экспорт", callback_data=make_callback_data("export_menu")),
+        )
+        builder.row(
             InlineKeyboardButton(text="🔔 Уведомления", callback_data=make_callback_data("notifications")),
+            InlineKeyboardButton(text="🧪 Бэктест", callback_data=make_callback_data("backtest_menu")),
+        )
+        builder.row(
+            InlineKeyboardButton(text="🏥 Здоровье", callback_data=make_callback_data("health")),
         )
         builder.row(
             InlineKeyboardButton(text="🛑 Остановить", callback_data=make_callback_data("stop_trading")),
@@ -1065,6 +1068,34 @@ class TelegramBot:
 
             await self._show_symbol_list(message, "whitelist")
 
+        @self.dp.message(Command("backtest"))
+        async def cmd_backtest(message: Message):
+            """
+            Команда /backtest — запустить бэктест стратегии.
+            Примеры:
+              /backtest                    — параметры по умолчанию
+              /backtest --tp 5 --sl 10     — TP 5%, SL 10%
+              /backtest --delay 30         — задержка входа 30 мин
+              /backtest --months 3         — за 3 месяца
+              /backtest --no-avg           — без усреднения
+            """
+            if not config.telegram.is_admin(message.from_user.id):
+                return
+
+            # Парсим аргументы из сообщения
+            parts = message.text.split(maxsplit=1)
+            extra_args = parts[1] if len(parts) > 1 else ""
+
+            await message.answer(
+                "🔄 <b>Бэктест запущен</b>\n\n"
+                f"Параметры: <code>{extra_args or 'по умолчанию'}</code>\n\n"
+                "Это займёт 2-5 минут, результат придёт сюда.",
+                parse_mode=ParseMode.HTML,
+            )
+
+            # Запускаем в фоне чтобы не блокировать бота
+            asyncio.create_task(self._run_backtest(message.chat.id, extra_args))
+
         # ==================== REPLY KEYBOARD HANDLER ====================
         @self.dp.message(lambda m: m.text and m.from_user and m.from_user.id in self._waiting_list_add)
         async def list_add_text_handler(message: Message):
@@ -1230,6 +1261,10 @@ class TelegramBot:
                     await self._cb_stop_trading(callback)
                 elif action == "start_trading":
                     await self._cb_start_trading(callback)
+                elif action == "backtest_menu":
+                    await self._cb_backtest_menu(callback)
+                elif action == "backtest_run":
+                    await self._cb_backtest_run(callback, args[0] if args else "default")
                 else:
                     await callback.answer(f"❌ Неизвестное действие: {action}")
 
@@ -1768,6 +1803,77 @@ class TelegramBot:
         await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=Keyboards.main_menu())
         await callback.answer("✅ Торговля запущена")
 
+    # ==================== BACKTEST CALLBACKS ====================
+
+    async def _cb_backtest_menu(self, callback: CallbackQuery):
+        """Меню бэктеста с пресетами"""
+        builder = InlineKeyboardBuilder()
+        builder.row(
+            InlineKeyboardButton(
+                text="Default (TP=2%, no SL)",
+                callback_data=make_callback_data("backtest_run", "default"),
+            ),
+        )
+        builder.row(
+            InlineKeyboardButton(
+                text="TP=5%, SL=10%",
+                callback_data=make_callback_data("backtest_run", "tp5_sl10"),
+            ),
+        )
+        builder.row(
+            InlineKeyboardButton(
+                text="TP=2%, delay 30min",
+                callback_data=make_callback_data("backtest_run", "delay30"),
+            ),
+        )
+        builder.row(
+            InlineKeyboardButton(
+                text="No averaging",
+                callback_data=make_callback_data("backtest_run", "noavg"),
+            ),
+        )
+        builder.row(
+            InlineKeyboardButton(
+                text="TP=5%, SL=15%, delay 15m",
+                callback_data=make_callback_data("backtest_run", "optimal"),
+            ),
+        )
+        builder.row(
+            InlineKeyboardButton(text="<< Назад", callback_data=make_callback_data("main")),
+        )
+
+        text = (
+            "<b>Backtest</b>\n\n"
+            "Выберите пресет или отправьте команду:\n"
+            "<code>/backtest --tp 5 --sl 10 --delay 30</code>\n\n"
+            "Параметры:\n"
+            "<code>--tp N</code>    Take Profit %\n"
+            "<code>--sl N</code>    Stop Loss %\n"
+            "<code>--delay N</code> Задержка входа (мин)\n"
+            "<code>--months N</code> Период (мес)\n"
+            "<code>--no-avg</code>  Без усреднения\n"
+            "<code>--no-reopen</code> Без переоткрытия"
+        )
+        await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=builder.as_markup())
+
+    async def _cb_backtest_run(self, callback: CallbackQuery, preset: str):
+        """Запуск бэктеста по пресету"""
+        presets = {
+            'default': '',
+            'tp5_sl10': '--tp 5 --sl 10',
+            'delay30': '--delay 30',
+            'noavg': '--no-avg',
+            'optimal': '--tp 5 --sl 15 --delay 15',
+        }
+        args = presets.get(preset, '')
+        await callback.message.edit_text(
+            f"<b>Backtest запущен...</b>\n\n"
+            f"Params: <code>{args or 'default'}</code>\n"
+            f"Ожидайте 2-5 минут.",
+            parse_mode=ParseMode.HTML,
+        )
+        asyncio.create_task(self._run_backtest(callback.message.chat.id, args))
+
     # ==================== MESSAGE METHODS ====================
 
     async def _show_status(self, message):
@@ -2121,6 +2227,107 @@ class TelegramBot:
             await message.answer()
         else:
             await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=Keyboards.notifications_toggle(self.notifier._enabled))
+
+    # ==================== BACKTEST ====================
+
+    async def _run_backtest(self, chat_id: int, extra_args: str = ""):
+        """Запустить бэктест в фоне и отправить результат в чат"""
+        try:
+            import subprocess
+            import json as _json
+
+            # Собираем команду
+            cmd = ["python", "/tmp/backtest.py"]
+            if extra_args:
+                cmd.extend(extra_args.split())
+
+            # Запускаем процесс
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+            output = stdout.decode('utf-8', errors='replace')
+
+            if proc.returncode != 0:
+                err_text = stderr.decode('utf-8', errors='replace')[-500:]
+                await self.bot.send_message(
+                    chat_id,
+                    f"<b>Backtest error</b>\n<pre>{err_text}</pre>",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+
+            # Пробуем прочитать JSON отчёт
+            try:
+                with open('backtest_report.json', 'r', encoding='utf-8') as f:
+                    report = _json.load(f)
+                r = report.get('results', {})
+                p = report.get('params', {})
+                monthly = report.get('monthly_pnl', {})
+
+                pnl = r.get('total_pnl', 0)
+                pnl_emoji = "+" if pnl >= 0 else ""
+                wr = r.get('win_rate', 0)
+
+                text = (
+                    f"<b>Backtest results</b>\n\n"
+                    f"<b>Params:</b> TP={p.get('tp', 2)}%, SL={p.get('sl', 0)}%, "
+                    f"pos=${p.get('position', 5)}, {p.get('months', 6)} months\n"
+                    f"Avg: {p.get('max_avg', 3)}x, delay: {p.get('delay', 0)}m, "
+                    f"reopen: {'yes' if p.get('reopen', True) else 'no'}\n\n"
+                    f"<b>Balance:</b> ${r.get('start_balance', 100)} -> ${r.get('end_balance', 0):.2f}\n"
+                    f"<b>PnL:</b> {pnl_emoji}${pnl:.2f}\n"
+                    f"<b>Max DD:</b> ${r.get('max_drawdown', 0):.2f}\n"
+                    f"<b>Trades:</b> {r.get('total_trades', 0)}\n"
+                    f"<b>Win rate:</b> {wr:.1f}%\n"
+                    f"<b>PF:</b> {r.get('profit_factor', 0):.2f}\n"
+                    f"<b>Fees:</b> ${r.get('fees', 0):.2f}\n"
+                    f"<b>Reopens:</b> {r.get('reopens', 0)}\n"
+                )
+
+                if monthly:
+                    text += "\n<b>Monthly:</b>\n"
+                    for m, mp in sorted(monthly.items()):
+                        me = "+" if mp >= 0 else ""
+                        text += f"  {m}: {me}${mp:.2f}\n"
+
+                # Топ-3 худших
+                trades = report.get('trades', [])
+                worst = sorted(trades, key=lambda t: t['pnl'])[:3]
+                if worst:
+                    text += "\n<b>Worst 3:</b>\n"
+                    for t in worst:
+                        text += (
+                            f"  {t['symbol']}: ${t['pnl']:+.2f} ({t['pnl_pct']:+.1f}%) "
+                            f"[{t['reason']}] avg={t['avg_count']}\n"
+                        )
+
+                await self.bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
+
+            except FileNotFoundError:
+                # JSON не создан, отправляем raw output
+                # Обрезаем до 4000 символов (лимит Telegram)
+                if len(output) > 4000:
+                    output = output[-4000:]
+                await self.bot.send_message(
+                    chat_id,
+                    f"<pre>{output}</pre>",
+                    parse_mode=ParseMode.HTML,
+                )
+
+        except asyncio.TimeoutError:
+            await self.bot.send_message(
+                chat_id,
+                "Backtest timeout (>10 min)",
+            )
+        except Exception as e:
+            logger.error(f"Backtest error: {e}", exc_info=True)
+            await self.bot.send_message(
+                chat_id,
+                f"Backtest error: {e}",
+            )
 
     # ==================== START/STOP ====================
 
