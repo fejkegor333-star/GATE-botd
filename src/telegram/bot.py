@@ -2239,6 +2239,7 @@ class TelegramBot:
     async def _run_backtest(self, chat_id: int, extra_args: str = ""):
         """Запустить бэктест в фоне и отправить результат в чат"""
         import json as _json
+        from html import escape as h
 
         report_path = '/app/backtest_report.json'
 
@@ -2254,13 +2255,12 @@ class TelegramBot:
                 cwd='/app',
             )
             stdout_data, stderr_data = await asyncio.wait_for(proc.communicate(), timeout=600)
-            output = stdout_data.decode('utf-8', errors='replace')
 
             if proc.returncode != 0:
                 err = stderr_data.decode('utf-8', errors='replace')[-500:]
                 await self.bot.send_message(
                     chat_id,
-                    f"Ошибка бэктеста:\n<pre>{err}</pre>",
+                    f"❌ Ошибка бэктеста:\n<pre>{h(err)}</pre>",
                     parse_mode=ParseMode.HTML,
                 )
                 return
@@ -2269,10 +2269,12 @@ class TelegramBot:
             try:
                 with open(report_path, 'r', encoding='utf-8') as f:
                     report = _json.load(f)
-            except Exception:
-                if len(output) > 4000:
-                    output = output[-4000:]
-                await self.bot.send_message(chat_id, f"<pre>{output}</pre>", parse_mode=ParseMode.HTML)
+            except Exception as exc:
+                logger.error(f"Не удалось прочитать {report_path}: {exc}")
+                await self.bot.send_message(
+                    chat_id,
+                    "❌ Бэктест завершился, но не удалось прочитать отчёт.",
+                )
                 return
 
             r = report.get('results', {})
@@ -2286,74 +2288,102 @@ class TelegramBot:
             pf = r.get('profit_factor', 0)
             end_bal = r.get('end_balance', 0)
             start_bal = r.get('start_balance', 100)
+            dd = r.get('max_drawdown', 0)
+            fees = r.get('fees', 0)
+            reopens = r.get('reopens', 0)
 
-            # Эмодзи результата
             result_emoji = "🟢" if pnl >= 0 else "🔴"
-            pnl_sign = "+" if pnl >= 0 else ""
+            pnl_pct = pnl / start_bal * 100 if start_bal else 0
+            dd_pct = dd / start_bal * 100 if start_bal else 0
 
-            sl_text = f"{p.get('sl', 0)}%" if p.get('sl', 0) > 0 else "выкл"
-            avg_text = f"{p.get('max_avg', 3)}x" if p.get('max_avg', 3) > 0 else "выкл"
+            sl_val = p.get('sl', 0)
+            sl_text = f"{sl_val}%" if sl_val > 0 else "выкл"
+            max_avg = p.get('max_avg', 3)
+            avg_text = f"{max_avg}x" if max_avg > 0 else "выкл"
             reopen_text = "да" if p.get('reopen', True) else "нет"
-            delay_text = f"{p.get('delay', 0)} мин" if p.get('delay', 0) > 0 else "сразу"
+            delay_val = p.get('delay', 0)
+            delay_text = f"{delay_val} мин" if delay_val > 0 else "сразу"
 
             text = (
-                f"{result_emoji} <b>Результат бэктеста</b>\n\n"
+                f"{result_emoji} <b>Результат бэктеста</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n\n"
 
-                f"<b>Настройки:</b>\n"
-                f"  Тейк-профит: {p.get('tp', 2)}%\n"
-                f"  Стоп-лосс: {sl_text}\n"
+                f"⚙️ <b>Настройки:</b>\n"
+                f"  TP: {p.get('tp', 2)}%  |  SL: {sl_text}\n"
                 f"  Позиция: ${p.get('position', 5)}\n"
                 f"  Усреднение: {avg_text}\n"
-                f"  Вход: {delay_text}\n"
-                f"  Переоткрытие: {reopen_text}\n"
+                f"  Вход: {delay_text}  |  Переоткрытие: {reopen_text}\n"
                 f"  Период: {p.get('months', 6)} мес\n\n"
 
-                f"<b>Результат:</b>\n"
-                f"  Баланс: ${start_bal} -> ${end_bal:.2f}\n"
-                f"  Прибыль: {pnl_sign}${pnl:.2f}\n"
-                f"  Макс просадка: ${r.get('max_drawdown', 0):.2f}\n"
-                f"  Комиссии: ${r.get('fees', 0):.2f}\n\n"
+                f"💰 <b>Результат:</b>\n"
+                f"  Баланс: ${start_bal:.2f} → ${end_bal:.2f}\n"
+                f"  Прибыль: <b>{'+'if pnl>=0 else ''}{pnl:.2f}$</b>"
+                f" ({'+' if pnl_pct>=0 else ''}{pnl_pct:.1f}%)\n"
+                f"  Макс просадка: {dd:.2f}$ ({dd_pct:.1f}%)\n"
+                f"  Комиссии: {fees:.2f}$\n\n"
 
-                f"<b>Сделки:</b>\n"
-                f"  Всего: {total}\n"
-                f"  Прибыльных: {wr:.0f}%\n"
+                f"📊 <b>Сделки:</b>\n"
+                f"  Всего: {total}  |  Win rate: {wr:.0f}%\n"
                 f"  Profit Factor: {pf:.2f}\n"
-                f"  Переоткрытий: {r.get('reopens', 0)}\n"
+                f"  Переоткрытий: {reopens}\n"
             )
 
+            # Статистика реалистичности (если есть)
+            entry_fails = r.get('entry_failures', 0)
+            avg_fails = r.get('avg_failures', 0)
+            slippage = p.get('slippage', 0)
+            fill_rate_val = p.get('fill_rate', 1.0)
+            if entry_fails > 0 or avg_fails > 0 or slippage > 0:
+                text += (
+                    f"\n🎯 <b>Модель IOC:</b>\n"
+                    f"  Проскальзыв: {slippage}%"
+                    f"  |  Fill: {fill_rate_val*100:.0f}%\n"
+                )
+                if entry_fails > 0:
+                    text += f"  Не исполн. входов: {entry_fails}\n"
+                if avg_fails > 0:
+                    text += f"  Не исполн. усредн: {avg_fails}\n"
+
             if monthly:
-                text += "\n<b>По месяцам:</b>\n"
+                text += "\n📅 <b>По месяцам:</b>\n"
                 for m, mp in sorted(monthly.items()):
                     m_emoji = "🟢" if mp >= 0 else "🔴"
-                    ms = "+" if mp >= 0 else ""
-                    text += f"  {m_emoji} {m}: {ms}${mp:.2f}\n"
+                    text += f"  {m_emoji} {m}: {'+'if mp>=0 else ''}{mp:.2f}$\n"
 
             worst = sorted(trades, key=lambda t: t['pnl'])[:3]
             if worst:
-                text += "\n<b>Худшие сделки:</b>\n"
+                text += "\n📉 <b>Худшие сделки:</b>\n"
                 for t in worst:
+                    sym = h(t['symbol'].replace('_USDT', ''))
                     text += (
-                        f"  {t['symbol']}: ${t['pnl']:+.2f} "
+                        f"  {sym}: {t['pnl']:+.2f}$ "
                         f"({t['pnl_pct']:+.1f}%) "
                         f"усредн: {t['avg_count']}\n"
                     )
 
             best = sorted(trades, key=lambda t: t['pnl'], reverse=True)[:3]
             if best:
-                text += "\n<b>Лучшие сделки:</b>\n"
+                text += "\n📈 <b>Лучшие сделки:</b>\n"
                 for t in best:
+                    sym = h(t['symbol'].replace('_USDT', ''))
                     text += (
-                        f"  {t['symbol']}: ${t['pnl']:+.2f} "
+                        f"  {sym}: {t['pnl']:+.2f}$ "
                         f"({t['pnl_pct']:+.1f}%)\n"
                     )
+
+            # Telegram лимит 4096 символов — обрезаем если нужно
+            if len(text) > 4050:
+                text = text[:4020] + "\n\n<i>...обрезано</i>"
 
             await self.bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
 
         except asyncio.TimeoutError:
-            await self.bot.send_message(chat_id, "Бэктест превысил 10 минут, отменён.")
+            await self.bot.send_message(chat_id, "⏱ Бэктест превысил 10 минут, отменён.")
         except Exception as e:
             logger.error(f"Ошибка бэктеста: {e}", exc_info=True)
-            await self.bot.send_message(chat_id, f"Ошибка бэктеста: {e}")
+            await self.bot.send_message(
+                chat_id, f"❌ Ошибка бэктеста: {h(str(e))}", parse_mode=ParseMode.HTML,
+            )
 
     # ==================== START/STOP ====================
 

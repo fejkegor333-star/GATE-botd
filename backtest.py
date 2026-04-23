@@ -2,19 +2,29 @@
 Backtest strategy: SHORT on new Gate.io futures listings.
 Uses public Gate.io API for historical candlestick data.
 
+Модель максимально приближена к реальной логике бота:
+  - Вход: Market IOC с проскальзыванием и вероятностью неисполнения
+  - TP: Лимитный IOC — исполняется только если low свечи <= TP цена
+  - SL: По умолчанию ВЫКЛ (как в боте), только таймаут
+  - Усреднение: IOC с вероятностью неисполнения
+  - Закрытие по таймауту: маркетом (по close свечи)
+
 Usage:
-  python backtest.py                     # Default params
-  python backtest.py --tp 5 --sl 10      # Custom TP/SL
+  python backtest.py                     # Default params (как бот)
+  python backtest.py --sl 10             # С опциональным стоп-лоссом
   python backtest.py --delay 30          # 30 min entry delay
   python backtest.py --months 3          # Last 3 months
   python backtest.py --no-reopen         # Disable reopen after TP
   python backtest.py --no-avg            # Disable averaging
+  python backtest.py --slippage 0        # Без проскальзывания (идеальный)
+  python backtest.py --fill-rate 1.0     # 100% исполнение (идеальный)
 """
 import asyncio
 import aiohttp
 import argparse
 import json
 import math
+import random
 import time
 import sys
 from datetime import datetime, timedelta
@@ -115,12 +125,8 @@ async def fetch_candles(session, contract: str, from_ts: int, to_ts: int,
     """Fetch all candles in batches. Gate.io does not allow limit+from+to together."""
     all_candles = []
     current = from_ts
-    # Gate.io returns max ~2000 candles per request with from+to (no limit param)
-    # For 5m interval: 2000 * 300s = ~7 days per batch
-
     while current < to_ts:
-        # Use from+to without limit (Gate.io restriction)
-        batch_end = min(current + 1999 * 300, to_ts)  # ~7 days for 5m candles
+        batch_end = min(current + 1999 * 300, to_ts)
         data = await api_get(session, f'{API_BASE}/futures/usdt/candlesticks', {
             'contract': contract,
             'interval': interval,
@@ -176,6 +182,10 @@ class Backtester:
         self.symbols_traded = set()
         self.daily_pnl: Dict[str, float] = {}
         self.reopen_count = 0
+        # Статистика реалистичной модели
+        self.entry_failures = 0
+        self.avg_failures = 0
+        self.tp_rejections = 0
 
     def _open(self) -> int:
         return len(self.positions)
@@ -185,6 +195,17 @@ class Backtester:
             return False
         if self._open() >= self.args.max_positions:
             return False
+
+        # Моделирование IOC: вероятность неисполнения
+        if random.random() > self.args.fill_rate:
+            self.entry_failures += 1
+            return False
+
+        # Проскальзывание на входе (для SHORT: цена исполнения выше = хуже)
+        if self.args.slippage > 0:
+            slip = random.uniform(0, self.args.slippage)
+            price = price * (1 + slip / 100)
+
         vol = self.args.position
         margin_needed = vol * 0.15
         if self.balance < margin_needed:
@@ -205,7 +226,8 @@ class Backtester:
         )
         return True
 
-    def close_position(self, symbol: str, price: float, reason: str, ts: datetime) -> Optional[TradeResult]:
+    def close_position(self, symbol: str, price: float, reason: str,
+                       ts: datetime) -> Optional[TradeResult]:
         pos = self.positions.get(symbol)
         if not pos:
             return None
@@ -257,34 +279,47 @@ class Backtester:
             if pos.avg_count < len(avg_levels):
                 rise_pct = (h - pos.initial_entry_price) / pos.initial_entry_price * 100
                 if rise_pct >= avg_levels[pos.avg_count]:
-                    add_vol = self.args.position
-                    if self.balance >= add_vol * 0.15:
-                        fee = add_vol * self.args.fee
-                        self.total_fees += fee
-                        self.balance -= fee
-                        self.total_volume += add_vol
-                        old_vol = pos.volume_usdt
-                        new_avg = (pos.entry_price * old_vol + h * add_vol) / (old_vol + add_vol)
-                        pos.entry_price = new_avg
-                        pos.volume_usdt += add_vol
-                        pos.avg_count += 1
+                    # Моделирование IOC усреднения: может не исполниться
+                    if random.random() > self.args.fill_rate:
+                        self.avg_failures += 1
+                    else:
+                        add_vol = self.args.position
+                        if self.balance >= add_vol * 0.15:
+                            # Проскальзывание при усреднении
+                            avg_price = h
+                            if self.args.slippage > 0:
+                                slip = random.uniform(0, self.args.slippage)
+                                avg_price = h * (1 + slip / 100)
 
-        # TP check (price drop for SHORT = profit)
-        tp_change = (pos.entry_price - l) / pos.entry_price * 100
-        if tp_change >= self.args.tp:
-            tp_price = pos.entry_price * (1 - self.args.tp / 100)
+                            fee = add_vol * self.args.fee
+                            self.total_fees += fee
+                            self.balance -= fee
+                            self.total_volume += add_vol
+                            old_vol = pos.volume_usdt
+                            new_avg = (pos.entry_price * old_vol + avg_price * add_vol) / (old_vol + add_vol)
+                            pos.entry_price = new_avg
+                            pos.volume_usdt += add_vol
+                            pos.avg_count += 1
+
+        # TP check — ЛИМИТНЫЙ IOC ордер (как в боте)
+        # Лимитка исполняется только если цена дошла до TP уровня
+        # Цена закрытия = TP цена (гарантия лимитного ордера, не хуже)
+        tp_price = pos.entry_price * (1 - self.args.tp / 100)
+        if l <= tp_price:
+            # Low свечи ниже/равен TP цене — лимитный ордер исполнится по TP цене
             self.close_position(symbol, tp_price, 'tp', ts)
             return 'tp'
 
-        # SL check (price rise for SHORT = loss)
+        # SL check (опционально — в боте по умолчанию ВЫКЛ)
         if self.args.sl > 0:
             sl_change = (h - pos.entry_price) / pos.entry_price * 100
             if sl_change >= self.args.sl:
-                sl_price = pos.entry_price * (1 + self.args.sl / 100)
+                # SL закрывается маркетом — с проскальзыванием
+                sl_price = h  # worst case — по high свечи
                 self.close_position(symbol, sl_price, 'sl', ts)
                 return 'sl'
 
-        # Timeout
+        # Timeout (как в боте — закрытие маркетом по текущей цене)
         hold = (ts - pos.opened_at).total_seconds() / 3600
         if hold >= self.args.timeout_hours:
             self.close_position(symbol, c, 'timeout', ts)
@@ -295,19 +330,26 @@ class Backtester:
 
 async def run_backtest(args):
     print("=" * 70)
-    print("  BACKTEST: SHORT ON NEW GATE.IO LISTINGS")
+    print("  БЭКТЕСТ: SHORT НА НОВЫХ ЛИСТИНГАХ GATE.IO")
+    print("  (реалистичная модель — IOC ордера, проскальзывание)")
     print("=" * 70)
     print()
-    print(f"Period:      last {args.months} months")
-    print(f"TP:          {args.tp}%")
-    print(f"SL:          {args.sl}% {'(ON)' if args.sl > 0 else '(OFF)'}")
-    print(f"Averaging:   {args.max_avg}x at {args.avg_levels}")
-    print(f"Position:    ${args.position}")
-    print(f"Max open:    {args.max_positions}")
-    print(f"Entry delay: {args.delay} min")
-    print(f"Reopen:      {'yes' if args.reopen else 'no'}")
-    print(f"Balance:     ${args.balance}")
+    print(f"Период:        последние {args.months} мес")
+    print(f"TP:            {args.tp}% (лимитный IOC)")
+    print(f"SL:            {args.sl}% {'(ВКЛ — маркет)' if args.sl > 0 else '(ВЫКЛ — как в боте)'}")
+    print(f"Усреднение:    {args.max_avg}x при {args.avg_levels}")
+    print(f"Позиция:       ${args.position}")
+    print(f"Макс открытых: {args.max_positions}")
+    print(f"Задержка входа:{args.delay} мин")
+    print(f"Переоткрытие:  {'да' if args.reopen else 'нет'}")
+    print(f"Баланс:        ${args.balance}")
+    print(f"Проскальзыв.:  {args.slippage}%")
+    print(f"Вероятн. fill: {args.fill_rate*100:.0f}%")
+    print(f"Таймаут:       {args.timeout_hours}ч")
+    print(f"Seed:          {args.seed}")
     print()
+
+    random.seed(args.seed)
 
     now = datetime.utcnow()
     start_dt = now - timedelta(days=args.months * 30)
@@ -318,10 +360,10 @@ async def run_backtest(args):
     async with aiohttp.ClientSession(timeout=timeout) as session:
 
         # 1. Fetch contracts
-        print("[1/3] Fetching contracts list...")
+        print("[1/3] Загрузка списка контрактов...")
         contracts = await fetch_contracts(session)
         if not contracts:
-            print("ERROR: failed to fetch contracts")
+            print("ОШИБКА: не удалось загрузить контракты")
             return
 
         # Filter new crypto listings
@@ -346,27 +388,26 @@ async def run_backtest(args):
             })
 
         listings.sort(key=lambda x: x['create_time'])
-        print(f"Found {len(listings)} new crypto listings")
+        print(f"Найдено {len(listings)} новых крипто-листингов")
         if not listings:
-            print("No data for backtest")
+            print("Нет данных для бэктеста")
             return
         print()
 
         # 2. Fetch candles & simulate
-        print(f"[2/3] Downloading price data & simulating...")
+        print(f"[2/3] Загрузка свечей и симуляция...")
         bt = Backtester(args)
         skipped = 0
 
         for idx, listing in enumerate(listings):
             symbol = listing['symbol']
-            # Use launch_time (not create_time!) as candle start
             candle_start = listing['launch_time']
             candle_end = min(candle_start + args.days_limit * 86400, end_ts)
 
             if idx % 5 == 0 or idx == len(listings) - 1:
                 sys.stdout.write(
                     f"\r  [{idx+1}/{len(listings)}] {symbol:20s} "
-                    f"balance=${bt.balance:.2f} trades={len(bt.trades)}"
+                    f"баланс=${bt.balance:.2f} сделок={len(bt.trades)}"
                 )
                 sys.stdout.flush()
 
@@ -404,7 +445,7 @@ async def run_backtest(args):
             if ath > 0 and entry_price / ath < args.ath_ratio:
                 continue
 
-            # Open position
+            # Open position (may fail due to fill rate)
             if not bt.open_position(symbol, entry_price, entry_dt):
                 continue
 
@@ -421,7 +462,7 @@ async def run_backtest(args):
                         bt.reopen_count += 1
                         bt.open_position(symbol, cl, candle_dt)
 
-            # Close if still open at end of data
+            # Close if still open at end of data (маркетом, как таймаут)
             if symbol in bt.positions:
                 last_t, _, _, _, last_c, _ = candles[-1]
                 bt.close_position(symbol, last_c, 'end_of_data',
@@ -432,14 +473,23 @@ async def run_backtest(args):
 
         # 3. Report
         print("=" * 70)
-        print("  RESULTS")
+        print("  РЕЗУЛЬТАТЫ")
         print("=" * 70)
         print()
 
         trades = bt.trades
         total = len(trades)
         if total == 0:
-            print("No trades executed!")
+            print("Сделок не было!")
+            # Save empty report
+            report = {
+                'params': _build_params_dict(args),
+                'results': _empty_results(args),
+                'trades': [],
+                'monthly_pnl': {},
+            }
+            with open('backtest_report.json', 'w', encoding='utf-8') as f:
+                json.dump(report, f, indent=2, ensure_ascii=False)
             return
 
         wins = [t for t in trades if t.pnl >= 0]
@@ -457,38 +507,42 @@ async def run_backtest(args):
         total_avgs = sum(t.avg_count for t in trades)
         total_pnl = bt.balance - bt.initial_balance
 
-        print(f"Start balance:     ${bt.initial_balance:.2f}")
-        print(f"End balance:       ${bt.balance:.2f}")
-        print(f"Total PnL:         ${total_pnl:+.2f} ({total_pnl/bt.initial_balance*100:+.1f}%)")
-        print(f"Max drawdown:      ${bt.max_drawdown:.2f} ({bt.max_drawdown/bt.initial_balance*100:.1f}%)")
-        print(f"Peak balance:      ${bt.peak_balance:.2f}")
-        print(f"Fees paid:         ${bt.total_fees:.2f}")
-        print(f"Volume traded:     ${bt.total_volume:.2f}")
+        print(f"Стартовый баланс:  ${bt.initial_balance:.2f}")
+        print(f"Конечный баланс:   ${bt.balance:.2f}")
+        print(f"Итого PnL:         ${total_pnl:+.2f} ({total_pnl/bt.initial_balance*100:+.1f}%)")
+        print(f"Макс просадка:     ${bt.max_drawdown:.2f} ({bt.max_drawdown/bt.initial_balance*100:.1f}%)")
+        print(f"Пик баланса:       ${bt.peak_balance:.2f}")
+        print(f"Комиссии:          ${bt.total_fees:.2f}")
+        print(f"Объём торгов:      ${bt.total_volume:.2f}")
         print()
-        print(f"Total trades:      {total}")
-        print(f"Winning:           {len(wins)} ({win_rate:.1f}%)")
-        print(f"Losing:            {len(losses)} ({100-win_rate:.1f}%)")
-        print(f"Profit factor:     {pf:.2f}")
-        print(f"Avg hold time:     {avg_hold:.1f}h")
+        print(f"Всего сделок:      {total}")
+        print(f"Прибыльных:        {len(wins)} ({win_rate:.1f}%)")
+        print(f"Убыточных:         {len(losses)} ({100-win_rate:.1f}%)")
+        print(f"Profit Factor:     {pf:.2f}")
+        print(f"Сред. удержание:   {avg_hold:.1f}ч")
         print()
-        print(f"TP closes:         {tp_count}")
-        print(f"SL closes:         {sl_count}")
-        print(f"Timeout closes:    {to_count}")
-        print(f"End-of-data:       {eod_count}")
-        print(f"Reopens:           {bt.reopen_count}")
+        print(f"Закрытий по TP:    {tp_count} (лимитный)")
+        print(f"Закрытий по SL:    {sl_count} (маркет)")
+        print(f"По таймауту:       {to_count} (маркет)")
+        print(f"Конец данных:      {eod_count}")
+        print(f"Переоткрытий:      {bt.reopen_count}")
         print()
-        print(f"Symbols traded:    {len(bt.symbols_traded)}")
-        print(f"Skipped (no data): {skipped}")
-        print(f"With averaging:    {avg_count} ({total_avgs} total avgs)")
+        print(f"Монет торговано:   {len(bt.symbols_traded)}")
+        print(f"Пропущено:         {skipped}")
+        print(f"С усреднением:     {avg_count} ({total_avgs} усредн. всего)")
         print()
-        print(f"Best trade:        ${max(t.pnl for t in trades):+.2f}")
-        print(f"Worst trade:       ${min(t.pnl for t in trades):+.2f}")
+        print(f"--- Статистика реалистичности ---")
+        print(f"Неисполн. входов:  {bt.entry_failures}")
+        print(f"Неисполн. усредн.: {bt.avg_failures}")
+        print()
+        print(f"Лучшая сделка:     ${max(t.pnl for t in trades):+.2f}")
+        print(f"Худшая сделка:     ${min(t.pnl for t in trades):+.2f}")
         print()
 
         # Top 10 worst
         worst = sorted(trades, key=lambda t: t.pnl)[:10]
         print("-" * 70)
-        print("  TOP-10 WORST TRADES")
+        print("  ТОП-10 ХУДШИХ СДЕЛОК")
         print("-" * 70)
         for i, t in enumerate(worst, 1):
             print(f"  {i:2d}. {t.symbol:18s} ${t.pnl:+8.2f} ({t.pnl_pct:+6.1f}%) "
@@ -500,7 +554,7 @@ async def run_backtest(args):
         # Top 10 best
         best = sorted(trades, key=lambda t: t.pnl, reverse=True)[:10]
         print("-" * 70)
-        print("  TOP-10 BEST TRADES")
+        print("  ТОП-10 ЛУЧШИХ СДЕЛОК")
         print("-" * 70)
         for i, t in enumerate(best, 1):
             print(f"  {i:2d}. {t.symbol:18s} ${t.pnl:+8.2f} ({t.pnl_pct:+6.1f}%) "
@@ -509,11 +563,11 @@ async def run_backtest(args):
         print()
 
         # Monthly PnL
+        monthly = {}
         if bt.daily_pnl:
             print("-" * 70)
-            print("  MONTHLY PnL")
+            print("  ПОМЕСЯЧНЫЙ PnL")
             print("-" * 70)
-            monthly = {}
             for day, pnl in sorted(bt.daily_pnl.items()):
                 m = day[:7]
                 monthly[m] = monthly.get(m, 0) + pnl
@@ -525,7 +579,7 @@ async def run_backtest(args):
 
         # Save JSON report
         report = {
-            'params': vars(args),
+            'params': _build_params_dict(args),
             'results': {
                 'start_balance': bt.initial_balance,
                 'end_balance': round(bt.balance, 2),
@@ -536,6 +590,8 @@ async def run_backtest(args):
                 'profit_factor': round(pf, 2),
                 'fees': round(bt.total_fees, 2),
                 'reopens': bt.reopen_count,
+                'entry_failures': bt.entry_failures,
+                'avg_failures': bt.avg_failures,
             },
             'trades': [
                 {
@@ -547,17 +603,39 @@ async def run_backtest(args):
                 }
                 for t in trades
             ],
-            'monthly_pnl': {m: round(p, 2) for m, p in sorted(monthly.items())} if bt.daily_pnl else {},
+            'monthly_pnl': {m: round(p, 2) for m, p in sorted(monthly.items())} if monthly else {},
         }
         with open('backtest_report.json', 'w', encoding='utf-8') as f:
             json.dump(report, f, indent=2, ensure_ascii=False)
-        print(f"Report saved: backtest_report.json")
+        print(f"Отчёт сохранён: backtest_report.json")
+
+
+def _build_params_dict(args) -> dict:
+    return {
+        'tp': args.tp, 'sl': args.sl, 'position': args.position,
+        'balance': args.balance, 'max_positions': args.max_positions,
+        'max_avg': args.max_avg, 'avg_levels': args.avg_levels,
+        'ath_ratio': args.ath_ratio, 'delay': args.delay,
+        'months': args.months, 'days_limit': args.days_limit,
+        'timeout_hours': args.timeout_hours, 'fee': args.fee,
+        'reopen': args.reopen, 'slippage': args.slippage,
+        'fill_rate': args.fill_rate, 'seed': args.seed,
+    }
+
+
+def _empty_results(args) -> dict:
+    return {
+        'start_balance': args.balance, 'end_balance': args.balance,
+        'total_pnl': 0, 'max_drawdown': 0, 'total_trades': 0,
+        'win_rate': 0, 'profit_factor': 0, 'fees': 0, 'reopens': 0,
+        'entry_failures': 0, 'avg_failures': 0,
+    }
 
 
 def main():
     parser = argparse.ArgumentParser(description='Backtest SHORT strategy on Gate.io new listings')
     parser.add_argument('--tp', type=float, default=2.0, help='Take profit %% (default: 2.0)')
-    parser.add_argument('--sl', type=float, default=0.0, help='Stop loss %% (default: 0 = off)')
+    parser.add_argument('--sl', type=float, default=0.0, help='Stop loss %% (default: 0 = off, как в боте)')
     parser.add_argument('--position', type=float, default=5.0, help='Position size USDT (default: 5)')
     parser.add_argument('--balance', type=float, default=100.0, help='Starting balance (default: 100)')
     parser.add_argument('--max-positions', type=int, default=10, help='Max concurrent (default: 10)')
@@ -571,6 +649,13 @@ def main():
     parser.add_argument('--fee', type=float, default=0.00075, help='Taker fee (default: 0.00075)')
     parser.add_argument('--no-reopen', action='store_true', help='Disable reopen after TP')
     parser.add_argument('--no-avg', action='store_true', help='Disable averaging')
+    # Реалистичные параметры (модель IOC ордеров)
+    parser.add_argument('--slippage', type=float, default=0.5,
+                        help='Max entry slippage %% (default: 0.5, 0=off)')
+    parser.add_argument('--fill-rate', type=float, default=0.85,
+                        help='IOC fill probability 0-1 (default: 0.85)')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed for reproducibility (default: 42)')
     args = parser.parse_args()
     args.reopen = not args.no_reopen
     if args.no_avg:
