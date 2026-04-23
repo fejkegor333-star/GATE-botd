@@ -112,19 +112,22 @@ async def fetch_contracts(session) -> list:
 
 async def fetch_candles(session, contract: str, from_ts: int, to_ts: int,
                         interval: str = '5m') -> list:
-    """Fetch all candles in batches of 2000."""
+    """Fetch all candles in batches. Gate.io does not allow limit+from+to together."""
     all_candles = []
     current = from_ts
+    # Gate.io returns max ~2000 candles per request with from+to (no limit param)
+    # For 5m interval: 2000 * 300s = ~7 days per batch
 
     while current < to_ts:
+        # Use from+to without limit (Gate.io restriction)
+        batch_end = min(current + 1999 * 300, to_ts)  # ~7 days for 5m candles
         data = await api_get(session, f'{API_BASE}/futures/usdt/candlesticks', {
             'contract': contract,
             'interval': interval,
             'from': current,
-            'to': to_ts,
-            'limit': 2000,
+            'to': batch_end,
         })
-        if not data:
+        if not data or not isinstance(data, list):
             break
 
         all_candles.extend(data)
