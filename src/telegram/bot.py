@@ -2238,102 +2238,122 @@ class TelegramBot:
 
     async def _run_backtest(self, chat_id: int, extra_args: str = ""):
         """Запустить бэктест в фоне и отправить результат в чат"""
-        try:
-            import subprocess
-            import json as _json
+        import json as _json
 
-            # Собираем команду
+        report_path = '/app/backtest_report.json'
+
+        try:
             cmd = ["python", "/app/backtest.py"]
             if extra_args:
                 cmd.extend(extra_args.split())
 
-            # Запускаем процесс
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd='/app',
             )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
-            output = stdout.decode('utf-8', errors='replace')
+            stdout_data, stderr_data = await asyncio.wait_for(proc.communicate(), timeout=600)
+            output = stdout_data.decode('utf-8', errors='replace')
 
             if proc.returncode != 0:
-                err_text = stderr.decode('utf-8', errors='replace')[-500:]
+                err = stderr_data.decode('utf-8', errors='replace')[-500:]
                 await self.bot.send_message(
                     chat_id,
-                    f"<b>Backtest error</b>\n<pre>{err_text}</pre>",
+                    f"Ошибка бэктеста:\n<pre>{err}</pre>",
                     parse_mode=ParseMode.HTML,
                 )
                 return
 
-            # Пробуем прочитать JSON отчёт
+            # Читаем JSON отчёт
             try:
-                with open('backtest_report.json', 'r', encoding='utf-8') as f:
+                with open(report_path, 'r', encoding='utf-8') as f:
                     report = _json.load(f)
-                r = report.get('results', {})
-                p = report.get('params', {})
-                monthly = report.get('monthly_pnl', {})
-
-                pnl = r.get('total_pnl', 0)
-                pnl_emoji = "+" if pnl >= 0 else ""
-                wr = r.get('win_rate', 0)
-
-                text = (
-                    f"<b>Backtest results</b>\n\n"
-                    f"<b>Params:</b> TP={p.get('tp', 2)}%, SL={p.get('sl', 0)}%, "
-                    f"pos=${p.get('position', 5)}, {p.get('months', 6)} months\n"
-                    f"Avg: {p.get('max_avg', 3)}x, delay: {p.get('delay', 0)}m, "
-                    f"reopen: {'yes' if p.get('reopen', True) else 'no'}\n\n"
-                    f"<b>Balance:</b> ${r.get('start_balance', 100)} -> ${r.get('end_balance', 0):.2f}\n"
-                    f"<b>PnL:</b> {pnl_emoji}${pnl:.2f}\n"
-                    f"<b>Max DD:</b> ${r.get('max_drawdown', 0):.2f}\n"
-                    f"<b>Trades:</b> {r.get('total_trades', 0)}\n"
-                    f"<b>Win rate:</b> {wr:.1f}%\n"
-                    f"<b>PF:</b> {r.get('profit_factor', 0):.2f}\n"
-                    f"<b>Fees:</b> ${r.get('fees', 0):.2f}\n"
-                    f"<b>Reopens:</b> {r.get('reopens', 0)}\n"
-                )
-
-                if monthly:
-                    text += "\n<b>Monthly:</b>\n"
-                    for m, mp in sorted(monthly.items()):
-                        me = "+" if mp >= 0 else ""
-                        text += f"  {m}: {me}${mp:.2f}\n"
-
-                # Топ-3 худших
-                trades = report.get('trades', [])
-                worst = sorted(trades, key=lambda t: t['pnl'])[:3]
-                if worst:
-                    text += "\n<b>Worst 3:</b>\n"
-                    for t in worst:
-                        text += (
-                            f"  {t['symbol']}: ${t['pnl']:+.2f} ({t['pnl_pct']:+.1f}%) "
-                            f"[{t['reason']}] avg={t['avg_count']}\n"
-                        )
-
-                await self.bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
-
-            except FileNotFoundError:
-                # JSON не создан, отправляем raw output
-                # Обрезаем до 4000 символов (лимит Telegram)
+            except Exception:
                 if len(output) > 4000:
                     output = output[-4000:]
-                await self.bot.send_message(
-                    chat_id,
-                    f"<pre>{output}</pre>",
-                    parse_mode=ParseMode.HTML,
-                )
+                await self.bot.send_message(chat_id, f"<pre>{output}</pre>", parse_mode=ParseMode.HTML)
+                return
+
+            r = report.get('results', {})
+            p = report.get('params', {})
+            monthly = report.get('monthly_pnl', {})
+            trades = report.get('trades', [])
+
+            pnl = r.get('total_pnl', 0)
+            total = r.get('total_trades', 0)
+            wr = r.get('win_rate', 0)
+            pf = r.get('profit_factor', 0)
+            end_bal = r.get('end_balance', 0)
+            start_bal = r.get('start_balance', 100)
+
+            # Эмодзи результата
+            result_emoji = "🟢" if pnl >= 0 else "🔴"
+            pnl_sign = "+" if pnl >= 0 else ""
+
+            sl_text = f"{p.get('sl', 0)}%" if p.get('sl', 0) > 0 else "выкл"
+            avg_text = f"{p.get('max_avg', 3)}x" if p.get('max_avg', 3) > 0 else "выкл"
+            reopen_text = "да" if p.get('reopen', True) else "нет"
+            delay_text = f"{p.get('delay', 0)} мин" if p.get('delay', 0) > 0 else "сразу"
+
+            text = (
+                f"{result_emoji} <b>Результат бэктеста</b>\n\n"
+
+                f"<b>Настройки:</b>\n"
+                f"  Тейк-профит: {p.get('tp', 2)}%\n"
+                f"  Стоп-лосс: {sl_text}\n"
+                f"  Позиция: ${p.get('position', 5)}\n"
+                f"  Усреднение: {avg_text}\n"
+                f"  Вход: {delay_text}\n"
+                f"  Переоткрытие: {reopen_text}\n"
+                f"  Период: {p.get('months', 6)} мес\n\n"
+
+                f"<b>Результат:</b>\n"
+                f"  Баланс: ${start_bal} -> ${end_bal:.2f}\n"
+                f"  Прибыль: {pnl_sign}${pnl:.2f}\n"
+                f"  Макс просадка: ${r.get('max_drawdown', 0):.2f}\n"
+                f"  Комиссии: ${r.get('fees', 0):.2f}\n\n"
+
+                f"<b>Сделки:</b>\n"
+                f"  Всего: {total}\n"
+                f"  Прибыльных: {wr:.0f}%\n"
+                f"  Profit Factor: {pf:.2f}\n"
+                f"  Переоткрытий: {r.get('reopens', 0)}\n"
+            )
+
+            if monthly:
+                text += "\n<b>По месяцам:</b>\n"
+                for m, mp in sorted(monthly.items()):
+                    m_emoji = "🟢" if mp >= 0 else "🔴"
+                    ms = "+" if mp >= 0 else ""
+                    text += f"  {m_emoji} {m}: {ms}${mp:.2f}\n"
+
+            worst = sorted(trades, key=lambda t: t['pnl'])[:3]
+            if worst:
+                text += "\n<b>Худшие сделки:</b>\n"
+                for t in worst:
+                    text += (
+                        f"  {t['symbol']}: ${t['pnl']:+.2f} "
+                        f"({t['pnl_pct']:+.1f}%) "
+                        f"усредн: {t['avg_count']}\n"
+                    )
+
+            best = sorted(trades, key=lambda t: t['pnl'], reverse=True)[:3]
+            if best:
+                text += "\n<b>Лучшие сделки:</b>\n"
+                for t in best:
+                    text += (
+                        f"  {t['symbol']}: ${t['pnl']:+.2f} "
+                        f"({t['pnl_pct']:+.1f}%)\n"
+                    )
+
+            await self.bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
 
         except asyncio.TimeoutError:
-            await self.bot.send_message(
-                chat_id,
-                "Backtest timeout (>10 min)",
-            )
+            await self.bot.send_message(chat_id, "Бэктест превысил 10 минут, отменён.")
         except Exception as e:
-            logger.error(f"Backtest error: {e}", exc_info=True)
-            await self.bot.send_message(
-                chat_id,
-                f"Backtest error: {e}",
-            )
+            logger.error(f"Ошибка бэктеста: {e}", exc_info=True)
+            await self.bot.send_message(chat_id, f"Ошибка бэктеста: {e}")
 
     # ==================== START/STOP ====================
 
