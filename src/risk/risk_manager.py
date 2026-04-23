@@ -566,10 +566,13 @@ class BalanceProtectionChecker:
 
     async def _protection_loop(self):
         """Главный цикл защиты"""
+        self._spot_unavailable = False
         while self._running:
             try:
                 await self._check_and_protect()
-                await asyncio.sleep(5)  # Проверяем каждые 5 секунд
+                # Если спот недоступен, проверяем реже (раз в 60с) чтобы не спамить логи
+                interval = 60 if self._spot_unavailable else 5
+                await asyncio.sleep(interval)
             except asyncio.CancelledError:
                 logger.info("BalanceProtectionChecker цикл отменен")
                 break
@@ -590,10 +593,10 @@ class BalanceProtectionChecker:
             futures_balance = await self._get_futures_balance()
             spot_balance = await self._get_spot_balance()
 
-            if futures_balance is None or spot_balance is None:
+            if futures_balance is None:
                 return
 
-            total_balance = futures_balance + spot_balance
+            total_balance = futures_balance + (spot_balance or 0)
 
             if total_balance <= 0:
                 return
@@ -691,7 +694,9 @@ class BalanceProtectionChecker:
             balance_data = await self.api_client.get_spot_balance()
 
             if not balance_data:
+                self._spot_unavailable = True
                 return None
+            self._spot_unavailable = False
 
             # Извлекаем баланс USDT
             if isinstance(balance_data, list):

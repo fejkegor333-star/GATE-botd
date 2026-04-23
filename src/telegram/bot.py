@@ -1810,31 +1810,31 @@ class TelegramBot:
         builder = InlineKeyboardBuilder()
         builder.row(
             InlineKeyboardButton(
-                text="Default (TP=2%, no SL)",
-                callback_data=make_callback_data("backtest_run", "default"),
+                text="Текущие настройки бота",
+                callback_data=make_callback_data("backtest_run", "current"),
             ),
         )
         builder.row(
             InlineKeyboardButton(
-                text="TP=5%, SL=10%",
-                callback_data=make_callback_data("backtest_run", "tp5_sl10"),
+                text="С стоп-лоссом 10%",
+                callback_data=make_callback_data("backtest_run", "with_sl"),
             ),
         )
         builder.row(
             InlineKeyboardButton(
-                text="TP=2%, delay 30min",
+                text="Вход через 30 мин",
                 callback_data=make_callback_data("backtest_run", "delay30"),
             ),
         )
         builder.row(
             InlineKeyboardButton(
-                text="No averaging",
+                text="Без усреднения",
                 callback_data=make_callback_data("backtest_run", "noavg"),
             ),
         )
         builder.row(
             InlineKeyboardButton(
-                text="TP=5%, SL=15%, delay 15m",
+                text="TP 5% + SL 15% + вход 15м",
                 callback_data=make_callback_data("backtest_run", "optimal"),
             ),
         )
@@ -1843,33 +1843,39 @@ class TelegramBot:
         )
 
         text = (
-            "<b>Backtest</b>\n\n"
-            "Выберите пресет или отправьте команду:\n"
-            "<code>/backtest --tp 5 --sl 10 --delay 30</code>\n\n"
-            "Параметры:\n"
-            "<code>--tp N</code>    Take Profit %\n"
-            "<code>--sl N</code>    Stop Loss %\n"
-            "<code>--delay N</code> Задержка входа (мин)\n"
-            "<code>--months N</code> Период (мес)\n"
-            "<code>--no-avg</code>  Без усреднения\n"
-            "<code>--no-reopen</code> Без переоткрытия"
+            "<b>Бэктест стратегии</b>\n\n"
+            "Симуляция на исторических данных за 6 месяцев.\n"
+            "Показывает как бы отработала стратегия с разными настройками.\n\n"
+            "Нажмите на один из вариантов ниже:"
         )
         await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=builder.as_markup())
 
     async def _cb_backtest_run(self, callback: CallbackQuery, preset: str):
         """Запуск бэктеста по пресету"""
-        presets = {
-            'default': '',
-            'tp5_sl10': '--tp 5 --sl 10',
-            'delay30': '--delay 30',
-            'noavg': '--no-avg',
-            'optimal': '--tp 5 --sl 15 --delay 15',
-        }
-        args = presets.get(preset, '')
+        # Для пресета "current" читаем реальные настройки из БД
+        if preset == 'current':
+            from src.db.settings import SettingsManager
+            with db.get_session() as session:
+                s = SettingsManager(session)
+                tp = s.get('take_profit_pct', 2.0)
+                pos = s.get('initial_position_usdt', 5.0)
+                max_pos = s.get('max_concurrent_coins', 10)
+                max_avg = s.get('max_avg_count', 3)
+            args = f'--tp {tp} --position {pos} --max-positions {max_pos} --max-avg {max_avg}'
+            label = f'TP={tp}%, позиция=${pos}, макс={max_pos}'
+        else:
+            presets = {
+                'with_sl': ('--sl 10', 'TP=2% + SL=10%'),
+                'delay30': ('--delay 30', 'Вход через 30 мин'),
+                'noavg': ('--no-avg', 'Без усреднения'),
+                'optimal': ('--tp 5 --sl 15 --delay 15', 'TP=5%, SL=15%, вход +15м'),
+            }
+            args, label = presets.get(preset, ('', 'default'))
+
         await callback.message.edit_text(
-            f"<b>Backtest запущен...</b>\n\n"
-            f"Params: <code>{args or 'default'}</code>\n"
-            f"Ожидайте 2-5 минут.",
+            f"<b>Бэктест запущен</b>\n\n"
+            f"{label}\n\n"
+            f"Ожидайте 2-5 минут, результат придёт сюда.",
             parse_mode=ParseMode.HTML,
         )
         asyncio.create_task(self._run_backtest(callback.message.chat.id, args))
