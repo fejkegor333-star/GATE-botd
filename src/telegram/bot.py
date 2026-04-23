@@ -2243,7 +2243,7 @@ class TelegramBot:
             import json as _json
 
             # Собираем команду
-            cmd = ["python", "/tmp/backtest.py"]
+            cmd = ["python", "/app/backtest.py"]
             if extra_args:
                 cmd.extend(extra_args.split())
 
