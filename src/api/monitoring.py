@@ -48,9 +48,23 @@ KNOWN_STOCK_TICKERS = {
     'GEELY', 'KUAISHOU', 'ZHIPU', 'XUNCE', 'XIAOMI', 'BABA', 'KWEB',
     # SPACEX — мы видели как акция (потеряли $8 на ней)
     'SPACEX',
+    # Акции с пустым contract_type, реально проскочили 2026-04-24
+    'FSLR', 'BWXT',
+    # Акции/ETF из Gate.io с contract_type="stocks" (резерв на случай сброса типа)
+    'INTC', 'CSCO', 'IBM', 'JPM', 'TSM', 'AMD', 'AVGO', 'MSFT', 'ASML',
+    'LLY', 'UNH', 'MCD', 'LMT', 'ACN', 'MRVL', 'MU',
+    'ARM', 'CCJ', 'COHR', 'CEG', 'CARR', 'LITE', 'JDON', 'WDC',
+    'ANTA', 'SUNAC', 'CITIC', 'MEITUAN', 'LENOVO', 'TENCENT', 'AKESO',
+    'OPENAI', 'ANTHROPIC', 'ANDURIL', 'KALSHI', 'POLYMARKET', 'MINIMAX',
+    'DEEPTECH', 'FUTUON', 'RDDTON', 'BTGOON',
+    'GE', 'GD', 'BA', 'NOC', 'RTX', 'BE',
+    'PEP', 'KO', 'PG', 'WMT', 'COST',
+    'AGG', 'TLT', 'IEFA', 'EWJ', 'EWT', 'EWY',
+    'SNDK', 'SBP', 'VCX', 'BMNR', 'PAYP',
     # X-варианты явных акций (поймаются также паттерном, дублируем для надёжности)
     'TSLAX', 'MSTRX', 'NVDAX', 'METAX', 'GOOGLX', 'AAPLX', 'MSFTX', 'COINX',
-    'AMDX', 'AMZNX', 'NFLXX', 'GOOGX',
+    'AMDX', 'AMZNX', 'NFLXX', 'GOOGX', 'HOODX', 'ORCLX', 'PLTRX', 'SPYX',
+    'QQQX', 'TQQQX', 'CRCLX', 'DFDVX',
 }
 
 # Индексы — те что мы реально видели + индексы с цифрами ловит паттерн ниже.

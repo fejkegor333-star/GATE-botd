@@ -43,10 +43,29 @@ STABLECOINS = {
 NON_CRYPTO_TYPES = {'stocks', 'indices', 'metals', 'commodities', 'forex'}
 
 KNOWN_NON_CRYPTO = {
+    # Акции (часто с пустым contract_type на Gate.io)
     'GEELY', 'KUAISHOU', 'ZHIPU', 'XUNCE', 'XIAOMI', 'BABA', 'KWEB',
-    'SPACEX', 'TSLAX', 'MSTRX', 'NVDAX', 'METAX', 'GOOGLX', 'AAPLX',
+    'SPACEX', 'FSLR', 'BWXT',
+    'INTC', 'CSCO', 'IBM', 'JPM', 'TSM', 'AMD', 'AVGO', 'MSFT', 'ASML',
+    'LLY', 'UNH', 'MCD', 'LMT', 'ACN', 'MRVL', 'MU',
+    'ARM', 'CCJ', 'COHR', 'CEG', 'CARR', 'LITE', 'JDON', 'WDC',
+    'ANTA', 'SUNAC', 'CITIC', 'MEITUAN', 'LENOVO', 'TENCENT', 'AKESO',
+    'OPENAI', 'ANTHROPIC', 'ANDURIL', 'KALSHI', 'POLYMARKET', 'MINIMAX',
+    'DEEPTECH', 'FUTUON', 'RDDTON', 'BTGOON',
+    'GE', 'GD', 'BA', 'NOC', 'RTX', 'BE',
+    'PEP', 'KO', 'PG', 'WMT', 'COST',
+    'AGG', 'TLT', 'IEFA', 'EWJ', 'EWT', 'EWY',
+    'SNDK', 'SBP', 'VCX', 'BMNR', 'PAYP',
+    # X-варианты
+    'TSLAX', 'MSTRX', 'NVDAX', 'METAX', 'GOOGLX', 'AAPLX', 'MSFTX', 'COINX',
+    'AMDX', 'AMZNX', 'NFLXX', 'GOOGX', 'HOODX', 'ORCLX', 'PLTRX', 'SPYX',
+    'QQQX', 'TQQQX', 'CRCLX', 'DFDVX',
+    # Индексы
     'GER40', 'US30', 'US100', 'HK50', 'JP225', 'UK100', 'VIX', 'GVZ',
-    'XAU', 'XAG', 'XPT', 'XPD', 'XCU', 'PAXG', 'IAU', 'SLVON',
+    'SPX500', 'AUS200', 'NAS100', 'HSCHKD',
+    # Металлы
+    'XAU', 'XAG', 'XPT', 'XPD', 'XCU', 'XAL', 'XPB', 'XNI',
+    'PAXG', 'IAU', 'SLVON', 'XAUT',
 }
 
 
