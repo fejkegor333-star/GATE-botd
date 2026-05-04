@@ -661,8 +661,8 @@ class BalanceProtectionChecker:
                 for pos in positions:
                     if pos is None:
                         continue
-                    # unrealized_pnl уже в USDT
-                    pnl = float(pos.get('unrealized_pnl', 0) or 0)
+                    # Gate.io API: поле называется "unrealised_pnl" (британский вариант)
+                    pnl = float(pos.get('unrealised_pnl', 0) or 0)
                     total_pnl += pnl
 
                 return total_pnl
