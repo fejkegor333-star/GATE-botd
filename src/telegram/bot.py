@@ -1861,8 +1861,13 @@ class TelegramBot:
                 pos = s.get('initial_position_usdt', 5.0)
                 max_pos = s.get('max_concurrent_coins', 10)
                 max_avg = s.get('max_avg_count', 3)
-            args = f'--tp {tp} --position {pos} --max-positions {max_pos} --max-avg {max_avg}'
-            label = f'TP={tp}%, позиция=${pos}, макс={max_pos}'
+                ath = s.get('ath_ratio_threshold', 0.3)
+                days = s.get('days_since_listing_limit', 3)
+            args = (
+                f'--tp {tp} --position {pos} --max-positions {max_pos} '
+                f'--max-avg {max_avg} --ath-ratio {ath} --days-limit {days}'
+            )
+            label = f'TP={tp}%, позиция=${pos}, макс={max_pos}, дней={days}'
         else:
             presets = {
                 'with_sl': ('--sl 10', 'TP=2% + SL=10%'),

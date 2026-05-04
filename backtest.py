@@ -25,6 +25,7 @@ import argparse
 import json
 import math
 import random
+import re
 import time
 import sys
 from datetime import datetime, timedelta
@@ -33,12 +34,14 @@ from typing import Optional, List, Dict
 
 # ============================================================
 # STABLECOINS & NON-CRYPTO FILTERS
+# (синхронизировано с src/api/monitoring.py)
 # ============================================================
 STABLECOINS = {
     'USDC', 'BUSD', 'DAI', 'TUSD', 'FDUSD', 'USDD', 'PYUSD', 'USDP',
     'GUSD', 'FRAX', 'LUSD', 'CEUR', 'SUSD', 'MIM', 'UST', 'USTC',
     'EURC', 'EURT', 'USDJ', 'CUSD', 'USDN', 'USDK', 'HUSD', 'TRIBE',
     'USD1', 'USDY', 'USDX', 'USDE', 'RLUSD', 'GHO', 'CRVUSD',
+    'EURI', 'USDB', 'USDQ', 'OUSD', 'SDAI', 'YUSD', 'XUSD',
 }
 NON_CRYPTO_TYPES = {'stocks', 'indices', 'metals', 'commodities', 'forex'}
 
@@ -56,17 +59,26 @@ KNOWN_NON_CRYPTO = {
     'PEP', 'KO', 'PG', 'WMT', 'COST',
     'AGG', 'TLT', 'IEFA', 'EWJ', 'EWT', 'EWY',
     'SNDK', 'SBP', 'VCX', 'BMNR', 'PAYP',
-    # X-варианты
+    # X-варианты (дублируем, regex тоже ловит)
     'TSLAX', 'MSTRX', 'NVDAX', 'METAX', 'GOOGLX', 'AAPLX', 'MSFTX', 'COINX',
     'AMDX', 'AMZNX', 'NFLXX', 'GOOGX', 'HOODX', 'ORCLX', 'PLTRX', 'SPYX',
     'QQQX', 'TQQQX', 'CRCLX', 'DFDVX',
     # Индексы
-    'GER40', 'US30', 'US100', 'HK50', 'JP225', 'UK100', 'VIX', 'GVZ',
+    'GER40', 'US30', 'US100', 'HK50', 'JP225', 'UK100', 'GVZ',
     'SPX500', 'AUS200', 'NAS100', 'HSCHKD',
+    'DAX40', 'US500', 'NDX100', 'HSI', 'NIK225', 'FR40', 'EU50', 'STOXX50',
+    'CHN50', 'IND50', 'CAN60', 'BR50', 'KOR200',
+    'OVX', 'BVZ', 'VXN', 'RVX',
     # Металлы
     'XAU', 'XAG', 'XPT', 'XPD', 'XCU', 'XAL', 'XPB', 'XNI',
     'PAXG', 'IAU', 'SLVON', 'XAUT',
+    # Товары
+    'WTI', 'BRENT',
 }
+
+# Паттерны (как в monitoring.py)
+_X_SUFFIX_RE = re.compile(r'^[A-Z]{3,8}X$')
+_INDEX_PATTERN_RE = re.compile(r'^[A-Z]{2,5}\d{2,3}$')
 
 
 def is_filtered(symbol: str, contract_data: dict) -> bool:
@@ -77,6 +89,14 @@ def is_filtered(symbol: str, contract_data: dict) -> bool:
         return True
     base = symbol.split('_')[0].upper()
     if base in STABLECOINS or base in KNOWN_NON_CRYPTO:
+        return True
+    # X-суффикс: TSLAX, MSFTX и т.д.
+    if _X_SUFFIX_RE.match(base) and len(base) >= 4:
+        base_without_x = base[:-1]
+        if base_without_x in KNOWN_NON_CRYPTO:
+            return True
+    # Индексы с цифрами: GER40, US30, HK50, JP225
+    if _INDEX_PATTERN_RE.match(base):
         return True
     return False
 
