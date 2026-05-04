@@ -141,7 +141,16 @@ class PositionManager:
                 else:
                     size = -1
                 if size == 0:
-                    size = -1  # Минимум 1 контракт
+                    # Минимальный 1 контракт слишком дорогой? Пропускаем.
+                    min_contract_value = quanto * entry_price
+                    if min_contract_value > volume_usdt * 3:
+                        logger.warning(
+                            f"Пропускаем {symbol}: мин. контракт ${min_contract_value:.2f} "
+                            f"превышает 3x от целевого объёма ${volume_usdt:.2f} "
+                            f"(quanto={quanto}, price=${entry_price:.6f})"
+                        )
+                        return None
+                    size = -1
 
                 # Оценка маржи Gate.io: номинал * (1/leverage + maintenance + 2*taker_fee)
                 nominal = abs(size) * quanto * entry_price
@@ -326,6 +335,13 @@ class PositionManager:
                 else:
                     size = -1
                 if size == 0:
+                    min_contract_value = quanto * price
+                    if min_contract_value > volume_usdt * 3:
+                        logger.warning(
+                            f"Усреднение отменено {symbol}: мин. контракт ${min_contract_value:.2f} "
+                            f"> 3x от объёма ${volume_usdt:.2f}"
+                        )
+                        return False
                     size = -1
                 order_result = await self.api_client.place_futures_order(
                     contract=symbol,
@@ -634,6 +650,13 @@ class PositionManager:
                 else:
                     size = -1
                 if size == 0:
+                    min_contract_value = quanto * new_entry_price
+                    if min_contract_value > volume_usdt * 3:
+                        logger.warning(
+                            f"Переоткрытие отменено {symbol}: мин. контракт ${min_contract_value:.2f} "
+                            f"> 3x от объёма ${volume_usdt:.2f}"
+                        )
+                        return None
                     size = -1
                 order_result = await self.api_client.place_futures_order(
                     contract=symbol,
