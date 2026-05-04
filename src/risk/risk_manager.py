@@ -601,6 +601,16 @@ class BalanceProtectionChecker:
             if total_balance <= 0:
                 return
 
+            # Логируем состояние раз в 5 минут
+            now = time.time()
+            if not hasattr(self, '_last_protection_log') or now - self._last_protection_log > 300:
+                self._last_protection_log = now
+                logger.info(
+                    f"💳 Защита баланса: futures=${futures_balance:.2f}, "
+                    f"spot=${spot_balance or 0:.2f}, unrealized={unrealized_pnl:+.2f}, "
+                    f"trigger={self._protection_trigger_pct}%"
+                )
+
             # Проверяем просадку
             # unrealized_pnl отрицательный при убытке
             if unrealized_pnl < 0:
