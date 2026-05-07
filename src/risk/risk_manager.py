@@ -618,10 +618,22 @@ class BalanceProtectionChecker:
                 drawdown_pct = (unrealized_pnl_abs / total_balance) * 100
 
                 if drawdown_pct >= self._protection_trigger_pct:
+                    # Cooldown: не спамить переводы если спот пустой
+                    now_ts = time.time()
+                    last_attempt = getattr(self, '_last_transfer_attempt', 0)
+                    if now_ts - last_attempt < 300:  # 5 мин между попытками
+                        return
+                    self._last_transfer_attempt = now_ts
+
                     logger.warning(
                         f"💰 PROTECTION TRIGGERED! "
                         f"Просадка: {drawdown_pct:.1f}% >= {self._protection_trigger_pct}%"
                     )
+
+                    # Проверяем есть ли деньги на споте
+                    if not spot_balance or spot_balance < 0.01:
+                        logger.warning("Спот пустой, перевод невозможен. Повтор через 5 мин.")
+                        return
 
                     # Рассчитываем сумму для перевода
                     transfer_amount = total_balance * (self._protection_transfer_pct / 100)
