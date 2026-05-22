@@ -503,6 +503,39 @@ class PositionManager:
                     tif="ioc",
                     close=True,
                 )
+
+                # PRICE_TOO_DEVIATED: лимитная цена слишком далеко от mark price
+                if isinstance(order_result, dict) and order_result.get('_error') == 'PRICE_TOO_DEVIATED':
+                    # Считаем попытки, после 3-х закрываем маркетом
+                    if not hasattr(self, '_deviated_counts'):
+                        self._deviated_counts = {}
+                    cnt = self._deviated_counts.get(symbol, 0) + 1
+                    self._deviated_counts[symbol] = cnt
+
+                    if cnt <= 3:
+                        if cnt == 1:
+                            logger.warning(
+                                f"⚠️ {symbol}: PRICE_TOO_DEVIATED — лимитная цена {price_str} "
+                                f"слишком далеко от mark price. Попытка {cnt}/3, ждём."
+                            )
+                        return None
+
+                    # 4+ попытка — закрываем маркетом
+                    logger.warning(
+                        f"⚠️ {symbol}: PRICE_TOO_DEVIATED {cnt} раз подряд. "
+                        f"Закрываем МАРКЕТОМ вместо лимитки."
+                    )
+                    self._deviated_counts[symbol] = 0
+                    price_str = "0"
+                    limit_price = None  # Сбрасываем лимитку
+                    order_result = await self.api_client.place_futures_order(
+                        contract=symbol,
+                        size=0,
+                        price="0",
+                        tif="ioc",
+                        close=True,
+                    )
+
                 if not order_result:
                     # Если не получилось (dual mode) — используем auto_size
                     # Требования API: size=0, reduce_only=true, close=false
@@ -516,9 +549,36 @@ class PositionManager:
                         reduce_only=True,
                         auto_size="close_short",
                     )
-                if not order_result:
+
+                # Повторная проверка PRICE_TOO_DEVIATED после dual mode
+                if isinstance(order_result, dict) and order_result.get('_error') == 'PRICE_TOO_DEVIATED':
+                    if not hasattr(self, '_deviated_counts'):
+                        self._deviated_counts = {}
+                    cnt = self._deviated_counts.get(symbol, 0) + 1
+                    self._deviated_counts[symbol] = cnt
+
+                    if cnt <= 3:
+                        return None
+
+                    logger.warning(f"⚠️ {symbol}: PRICE_TOO_DEVIATED (dual), закрываем МАРКЕТОМ")
+                    self._deviated_counts[symbol] = 0
+                    order_result = await self.api_client.place_futures_order(
+                        contract=symbol,
+                        size=0,
+                        price="0",
+                        tif="ioc",
+                        close=False,
+                        reduce_only=True,
+                        auto_size="close_short",
+                    )
+
+                if not order_result or (isinstance(order_result, dict) and '_error' in order_result):
                     logger.error(f"Не удалось закрыть позицию на бирже для {symbol}")
                     return None
+
+                # Сбрасываем счётчик при успешном ордере
+                if hasattr(self, '_deviated_counts') and symbol in self._deviated_counts:
+                    del self._deviated_counts[symbol]
                 order_id = str(order_result.get('id', ''))
                 # Используем реальную цену исполнения с биржи
                 fill_price_str = order_result.get('fill_price', '0')

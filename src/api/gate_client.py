@@ -349,14 +349,15 @@ class GateApiClient:
 
                 if response.status != 200:
                     error_text = await response.text()
-                    logger.error(f"API Error {response.status}: {error_text[:200]}")
-                    raise aiohttp.ClientResponseError(
-                        request_info=response.request_info,
-                        history=response.history,
-                        status=response.status,
-                        message=error_text[:200],
-                    )
+                    if response.status == 403:
+                        if not getattr(self, '_spot_403_logged', False):
+                            logger.warning(f"Spot API недоступен (403): нет разрешения. Повторные ошибки будут скрыты.")
+                            self._spot_403_logged = True
+                    else:
+                        logger.error(f"API Error {response.status}: {error_text[:200]}")
+                    return {}
 
+                self._spot_403_logged = False
                 data = await response.json()
                 return data
 
@@ -609,6 +610,8 @@ class GateApiClient:
                     # Возвращаем ошибку с меткой, чтобы caller мог обработать
                     if 'INSUFFICIENT_AVAILABLE' in error_text:
                         return {'_error': 'INSUFFICIENT_AVAILABLE', '_raw': error_text[:300]}
+                    if 'PRICE_TOO_DEVIATED' in error_text:
+                        return {'_error': 'PRICE_TOO_DEVIATED', '_raw': error_text[:300]}
                     return None
 
                 data = await response.json()

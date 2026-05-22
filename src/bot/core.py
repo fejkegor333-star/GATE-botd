@@ -772,9 +772,13 @@ class TradingBot:
             symbol: Символ контракта
             current_price: Текущая цена
         """
-        # Кулдаун после неудачной попытки закрытия (60 сек)
+        # Кулдаун после неудачной попытки закрытия (60 сек, макс 5 мин)
         if symbol in self._close_cooldowns:
-            if time.time() - self._close_cooldowns[symbol] < 60:
+            cooldown_start = self._close_cooldowns[symbol]
+            # Увеличиваем cooldown с каждой неудачей (до 5 мин)
+            fail_count = getattr(self, '_close_fail_counts', {}).get(symbol, 1)
+            cooldown_sec = min(60 * fail_count, 300)
+            if time.time() - cooldown_start < cooldown_sec:
                 return
             del self._close_cooldowns[symbol]
 
@@ -792,6 +796,13 @@ class TradingBot:
                     success = await self._handle_close_signal(symbol, current_price, close_reason)
                     if not success:
                         self._close_cooldowns[symbol] = time.time()
+                        if not hasattr(self, '_close_fail_counts'):
+                            self._close_fail_counts = {}
+                        self._close_fail_counts[symbol] = self._close_fail_counts.get(symbol, 0) + 1
+                    else:
+                        # Сбрасываем счётчик при успехе
+                        if hasattr(self, '_close_fail_counts') and symbol in self._close_fail_counts:
+                            del self._close_fail_counts[symbol]
 
             except Exception as e:
                 logger.error(f"Ошибка проверки сигналов закрытия {symbol}: {e}")
