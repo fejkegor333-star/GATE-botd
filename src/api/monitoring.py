@@ -218,6 +218,11 @@ class ListingMonitor:
         self._retry_after.pop(symbol, None)
         logger.info(f"Символ {symbol} сброшен для повторной обработки")
 
+    def schedule_retry(self, symbol: str, retry_minutes: int = 5):
+        """Запланировать повтор без расхода попыток (для временных условий типа лимита позиций)."""
+        self._processing_symbols.discard(symbol)
+        self._retry_after[symbol] = time.time() + retry_minutes * 60
+
     def mark_listing_failed(self, symbol: str, permanent: bool = False, retry_minutes: int = 5):
         """Пометить что обработка листинга не удалась.
 

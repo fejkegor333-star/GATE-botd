@@ -409,7 +409,8 @@ class TradingBot:
                 whitelist_only = settings.get('whitelist_only', False)
             if max_coins > 0 and active_count >= max_coins:
                 logger.info(f"Достигнут лимит позиций ({active_count}/{max_coins}), {symbol} в очередь")
-                listing_monitor.mark_listing_failed(symbol, permanent=False, retry_minutes=5)
+                # Не считаем как failed — это временное условие, повторим без расхода попыток
+                listing_monitor.schedule_retry(symbol, retry_minutes=5)
                 return
 
             # Проверяем whitelist-only режим
