@@ -1892,13 +1892,16 @@ class TelegramBot:
         risk_status = risk_manager.get_status()
         health = self.helpers.get_system_health()
 
+        # Получаем актуальный баланс через API (не кеш)
+        balance = await risk_manager.balance_checker.get_balance() or 0
+
         status_text = (
             "🔧 <b>Статус бота</b>\n\n"
             f"<b>Бот:</b> {'✅ Работает' if health.get('bot_running') else '❌ Остановлен'}\n"
             f"<b>WebSocket:</b> {'✅ Подключен' if health.get('ws_connected') else '❌ Отключен'}\n"
             f"<b>База данных:</b> {'✅ OK' if health.get('db_ok') else '❌ Ошибка'}\n"
             f"<b>API:</b> {'✅ OK' if health.get('api_ok') else '❌ Ошибка'}\n\n"
-            f"<b>Баланс:</b> ${risk_status['balance'] or 0:.2f}\n"
+            f"<b>Баланс:</b> ${balance:.2f}\n"
             f"<b>PnL за день:</b> ${risk_status['daily_pnl']:+.2f}\n\n"
             f"<b>Предохранитель:</b> {risk_status['circuit_breaker_state']}\n"
             f"<b>Активных позиций:</b> {len(position_manager.get_all_positions())}"
