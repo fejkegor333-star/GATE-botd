@@ -1225,6 +1225,8 @@ class TelegramBot:
                     await self._cb_setting_edit(callback, args[0] if args else "")
                 elif action == "setting_change":
                     await self._cb_setting_change(callback, args[0] if args else "", args[1] if len(args) > 1 else "")
+                elif action == "avg_level_change":
+                    await self._cb_avg_level_change(callback, args[0] if args else "0", args[1] if len(args) > 1 else "0")
                 elif action == "orderbook_toggle":
                     await self._cb_orderbook_toggle(callback, args[0] if args else "")
                 elif action == "auto_size_toggle":
@@ -1468,7 +1470,59 @@ class TelegramBot:
         current_value = self.helpers.get_setting_value(setting_key) or default
 
         if param == "avg_levels":
-            text = f"📊 <b>{name}</b>\n\nТекущее: {current_value}\n\nИзмените через /set"
+            avg_amount = self.helpers.get_setting_value('avg_amount_usdt') or 10
+            max_avg = self.helpers.get_setting_value('max_avg_count') or 3
+            levels = current_value if isinstance(current_value, list) else [300, 700, 1000]
+
+            text = (
+                f"📊 <b>Настройки усреднения</b>\n\n"
+                f"<b>Объём усреднения:</b> ${avg_amount}\n"
+                f"<b>Макс. усреднений:</b> {max_avg}\n\n"
+                f"<b>Уровни (% роста от входа):</b>\n"
+            )
+            for i, lvl in enumerate(levels):
+                text += f"  {i+1}. +{lvl}%\n"
+
+            text += (
+                f"\n<i>Пример: при входе $1 и уровне 300%,\n"
+                f"усреднение на ${avg_amount} при цене $4</i>"
+            )
+
+            builder = InlineKeyboardBuilder()
+            # Кнопки для каждого уровня: уменьшить / увеличить
+            for i, lvl in enumerate(levels):
+                builder.row(
+                    InlineKeyboardButton(
+                        text=f"⬇️ {lvl}% -50",
+                        callback_data=make_callback_data("avg_level_change", str(i), "-50")
+                    ),
+                    InlineKeyboardButton(
+                        text=f"Ур.{i+1}: {lvl}%",
+                        callback_data=make_callback_data("avg_level_change", str(i), "0")
+                    ),
+                    InlineKeyboardButton(
+                        text=f"⬆️ {lvl}% +50",
+                        callback_data=make_callback_data("avg_level_change", str(i), "+50")
+                    ),
+                )
+            # Объём усреднения
+            builder.row(
+                InlineKeyboardButton(
+                    text=f"💵 Объём -{5}$",
+                    callback_data=make_callback_data("setting_change", "avg_amount", "-5")
+                ),
+                InlineKeyboardButton(
+                    text=f"${avg_amount}",
+                    callback_data=make_callback_data("setting_edit", "avg_levels")
+                ),
+                InlineKeyboardButton(
+                    text=f"💵 Объём +{5}$",
+                    callback_data=make_callback_data("setting_change", "avg_amount", "+5")
+                ),
+            )
+            builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data=make_callback_data("settings_menu")))
+            await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=builder.as_markup())
+            return
         elif param == "protection":
             trigger = self.helpers.get_setting_value('protection_trigger_pct') or 50
             transfer = self.helpers.get_setting_value('protection_transfer_pct') or 25
@@ -1585,7 +1639,32 @@ class TelegramBot:
         # Сохраняем
         if self.helpers.set_setting_value(setting_key, new_value):
             await callback.answer(f"✅ Значение изменено на {new_value}")
-            await self._cb_setting_edit(callback, param)
+            # Для avg_amount возвращаемся в меню усреднений
+            redirect_param = "avg_levels" if param == "avg_amount" else param
+            await self._cb_setting_edit(callback, redirect_param)
+        else:
+            await callback.answer("❌ Ошибка сохранения")
+
+    async def _cb_avg_level_change(self, callback: CallbackQuery, level_idx: str, delta: str):
+        """Изменить конкретный уровень усреднения"""
+        idx = int(level_idx)
+        d = int(delta)
+
+        levels = self.helpers.get_setting_value('avg_levels') or [300, 700, 1000]
+        if not isinstance(levels, list):
+            levels = [300, 700, 1000]
+
+        if d == 0 or idx >= len(levels):
+            await callback.answer()
+            return
+
+        levels[idx] = max(10, levels[idx] + d)
+        # Сортируем чтобы уровни шли по возрастанию
+        levels.sort()
+
+        if self.helpers.set_setting_value('avg_levels', levels):
+            await callback.answer(f"✅ Уровни: {levels}")
+            await self._cb_setting_edit(callback, "avg_levels")
         else:
             await callback.answer("❌ Ошибка сохранения")
 
@@ -1951,7 +2030,7 @@ class TelegramBot:
         text = (
             "⚙️ <b>Настройки</b>\n\n"
             f"💵 Объем позиции: {size_str}\n"
-            f"💵 Объем усреднения: {size_str} (= позиция)\n"
+            f"💵 Объем усреднения: ${self.helpers.get_setting_value('avg_amount_usdt') or position_size:.0f}\n"
             f"🎯 TP %: {tp_pct:.1f}%\n"
             f"📊 ATH ratio: {ath_ratio:.2f}\n"
             f"📅 Дней листинг: {days}\n"

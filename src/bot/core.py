@@ -823,8 +823,15 @@ class TradingBot:
         try:
             avg_number, avg_level_pct = signal
 
-            # Объём усреднения = объёму позиции (авто или ручной)
-            volume_usdt = await self._calculate_position_size()
+            # Объём усреднения: отдельная настройка avg_amount_usdt
+            from src.db.settings import SettingsManager
+            with db.get_session() as _s:
+                avg_amount = float(SettingsManager(_s).get('avg_amount_usdt', 0))
+            if avg_amount > 0:
+                volume_usdt = avg_amount
+            else:
+                # Fallback: объём = объёму позиции
+                volume_usdt = await self._calculate_position_size()
 
             # Получаем параметры контракта для корректной проверки маржи
             contract_info = await self.api_client.get_contract_info(symbol)
