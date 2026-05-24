@@ -586,15 +586,52 @@ class PositionManager:
                 fill_price_val = float(fill_price_str) if fill_price_str else 0.0
                 left_val = abs(float(left_str)) if left_str else 0.0
 
-                # Если лимитный ордер не исполнился (fill_price=0 или left>0) — не закрываем в БД
+                # Обработка лимитного ордера
                 if limit_price is not None:
-                    if fill_price_val <= 0 or left_val > 0:
+                    order_size = abs(int(order_result.get('size', 0) or 0))
+                    filled_count = order_size - int(left_val) if order_size > 0 else 0
+
+                    if fill_price_val <= 0 and left_val > 0:
+                        # Полностью не исполнен
                         logger.info(
                             f"⏸️ Лимитное закрытие {symbol} не исполнено "
                             f"(fill_price={fill_price_val}, left={left_val}) — "
                             f"цена отскочила выше {limit_price}, ждём следующий сигнал"
                         )
                         return None
+
+                    if fill_price_val > 0 and left_val > 0 and filled_count > 0:
+                        # ЧАСТИЧНОЕ исполнение: часть контрактов закрыта на бирже
+                        # Нужно обновить позицию в БД, уменьшив объём
+                        try:
+                            contract_info = await self.api_client.get_contract_info(symbol)
+                            quanto = float(contract_info.get('quanto_multiplier', 1) or 1) if contract_info else 1
+                            closed_volume = filled_count * quanto * fill_price_val
+
+                            with db.get_session() as session:
+                                db_pos = session.query(Position).filter(
+                                    Position.contract_symbol == symbol,
+                                    Position.status == 'open'
+                                ).first()
+                                if db_pos:
+                                    old_vol = float(db_pos.total_volume_usdt)
+                                    new_vol = max(old_vol - closed_volume, 0)
+                                    db_pos.total_volume_usdt = new_vol
+                                    session.commit()
+                                    logger.warning(
+                                        f"⚠️ Частичное закрытие {symbol}: {filled_count} из {order_size} контрактов, "
+                                        f"объём ${old_vol:.2f} → ${new_vol:.2f}, fill=${fill_price_val:.6f}"
+                                    )
+
+                            # Обновляем кэш позиции
+                            if symbol in self._active_positions:
+                                pos = self._active_positions[symbol]
+                                pos.total_volume_usdt = max(float(pos.total_volume_usdt) - closed_volume, 0)
+
+                        except Exception as e:
+                            logger.error(f"Ошибка обработки частичного закрытия {symbol}: {e}")
+
+                        return None  # Позиция ещё открыта (частично)
 
                 if fill_price_val > 0:
                     exit_price = fill_price_val
