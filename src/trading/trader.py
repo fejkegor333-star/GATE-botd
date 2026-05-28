@@ -999,16 +999,8 @@ class PositionManager:
             return 'tp'
 
         # Стоп-лосс НЕ используется по стратегии
-
-        # Таймаут позиции
-        if position.opened_at:
-            time_elapsed = datetime.utcnow() - position.opened_at
-            if time_elapsed >= timedelta(hours=config.trading.position_timeout_hours):
-                logger.info(
-                    f"⏰ Сигнал TIMEOUT для {symbol}: "
-                    f"{time_elapsed.total_seconds() / 3600:.1f} часов"
-                )
-                return 'timeout'
+        # Таймаут НЕ используется — стратегия "бесконечного шорта",
+        # позиция держится до TP или ручного закрытия
 
         return None
 
@@ -1308,34 +1300,9 @@ class PositionManager:
             return []
 
     async def cleanup_old_positions(self):
-        """Закрыть просроченные позиции"""
-        try:
-            # Собираем список позиций для закрытия (без открытой сессии)
-            positions_to_close = []
-
-            with db.get_session() as session:
-                positions = session.query(Position).filter(
-                    Position.status == 'open'
-                ).all()
-
-                for position in positions:
-                    if position.opened_at:
-                        time_elapsed = datetime.utcnow() - position.opened_at
-                        if time_elapsed >= timedelta(hours=config.trading.position_timeout_hours):
-                            current_price = float(position.current_price or position.entry_price)
-                            positions_to_close.append((position.contract_symbol, current_price))
-
-            # Закрываем позиции вне сессии (close_position откроет свою)
-            closed_count = 0
-            for symbol, price in positions_to_close:
-                await self.close_position(symbol, price, reason='timeout')
-                closed_count += 1
-
-            if closed_count > 0:
-                logger.info(f"Закрыто {closed_count} просроченных позиций")
-
-        except Exception as e:
-            logger.error(f"Ошибка очистки старых позиций: {e}")
+        """Заглушка — таймаут отключён (стратегия бесконечного шорта).
+        Позиции закрываются только по TP или вручную."""
+        pass
 
 
 # Глобальный инстанс
