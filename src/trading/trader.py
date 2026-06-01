@@ -1242,12 +1242,32 @@ class PositionManager:
 
         try:
             exchange_positions = await self.api_client.get_all_positions()
+
+            # ЗАЩИТА: если API вернул None/пустой список, а у нас есть позиции —
+            # это сбой API, а не реальное закрытие. Не удаляем позиции.
+            if not exchange_positions and len(self._active_positions) > 0:
+                logger.warning(
+                    f"API вернул пустой список позиций, но у нас "
+                    f"{len(self._active_positions)} активных. "
+                    f"Вероятный сбой API — пропускаем проверку."
+                )
+                return []
+
             exchange_symbols = set()
-            for pos in (exchange_positions or []):
+            for pos in exchange_positions:
                 symbol = pos.get('contract', '')
                 size = int(pos.get('size', 0) or 0)
                 if symbol and size != 0:
                     exchange_symbols.add(symbol)
+
+            # Дополнительная защита: если на бирже 0 позиций, а у нас > 3 —
+            # скорее всего сбой API, а не массовое ручное закрытие
+            if len(exchange_symbols) == 0 and len(self._active_positions) > 3:
+                logger.warning(
+                    f"API показывает 0 позиций, а у нас {len(self._active_positions)}. "
+                    f"Подозрение на сбой API — пропускаем проверку."
+                )
+                return []
 
             closed_externally = []
             for symbol in list(self._active_positions.keys()):
