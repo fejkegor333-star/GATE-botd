@@ -23,10 +23,15 @@ logger = logging.getLogger(__name__)
 class PositionManager:
     """Менеджер позиций SHORT"""
 
+    # Сколько сверок подряд позиция должна отсутствовать на бирже,
+    # прежде чем считать её закрытой вручную (сверка идёт раз в 30 сек)
+    EXTERNAL_CLOSE_CONFIRMATIONS = 2
+
     def __init__(self):
         self.api_client = GateApiClient()
         self._active_positions: Dict[str, Position] = {}
         self._last_db_price_update: Dict[str, float] = {}  # symbol -> timestamp последнего обновления цены в БД
+        self._missing_on_exchange: Dict[str, int] = {}  # symbol -> сверок подряд без позиции на бирже
 
     def _is_blacklisted(self, symbol: str) -> bool:
         """Проверить, находится ли символ в чёрном списке"""
@@ -1141,6 +1146,10 @@ class PositionManager:
         try:
             exchange_positions = await self.api_client.get_all_positions()
 
+            if exchange_positions is None:
+                logger.warning("Не удалось прочитать позиции с биржи — синхронизация пропущена")
+                return
+
             if not exchange_positions:
                 logger.info("На бирже нет открытых позиций")
                 return
@@ -1238,18 +1247,22 @@ class PositionManager:
             Список символов, которые были закрыты снаружи
         """
         if not self._active_positions:
+            self._missing_on_exchange.clear()
+            return []
+
+        # В DRY_RUN позиций на бирже нет по определению — сверять не с чем
+        if config.dry_run:
             return []
 
         try:
             exchange_positions = await self.api_client.get_all_positions()
 
-            # ЗАЩИТА: если API вернул None/пустой список, а у нас есть позиции —
-            # это сбой API, а не реальное закрытие. Не удаляем позиции.
-            if not exchange_positions and len(self._active_positions) > 0:
+            # None = биржу прочитать не удалось (сбой сети/API). Пустой список —
+            # это ответ биржи «позиций нет», ему верим.
+            if exchange_positions is None:
                 logger.warning(
-                    f"API вернул пустой список позиций, но у нас "
-                    f"{len(self._active_positions)} активных. "
-                    f"Вероятный сбой API — пропускаем проверку."
+                    f"Не удалось прочитать позиции с биржи, у нас "
+                    f"{len(self._active_positions)} активных — пропускаем проверку."
                 )
                 return []
 
@@ -1260,58 +1273,70 @@ class PositionManager:
                 if symbol and size != 0:
                     exchange_symbols.add(symbol)
 
-            # Дополнительная защита: если на бирже 0 позиций, а у нас > 3 —
-            # скорее всего сбой API, а не массовое ручное закрытие
-            if len(exchange_symbols) == 0 and len(self._active_positions) > 3:
-                logger.warning(
-                    f"API показывает 0 позиций, а у нас {len(self._active_positions)}. "
-                    f"Подозрение на сбой API — пропускаем проверку."
-                )
-                return []
+            # Забываем счётчики по символам, которых уже нет в отслеживании
+            for symbol in list(self._missing_on_exchange):
+                if symbol not in self._active_positions:
+                    del self._missing_on_exchange[symbol]
 
             closed_externally = []
             for symbol in list(self._active_positions.keys()):
-                if symbol not in exchange_symbols:
-                    position = self._active_positions[symbol]
-                    exit_price = float(position.current_price or position.entry_price)
+                if symbol in exchange_symbols:
+                    # Позиция на месте — сбрасываем счётчик пропусков
+                    self._missing_on_exchange.pop(symbol, None)
+                    continue
 
-                    logger.warning(
-                        f"🔄 Позиция {symbol} закрыта вне бота "
-                        f"(вручную на бирже). Удаляем из отслеживания."
+                # Одного пропуска мало: лимитный ордер мог ещё не залиться,
+                # закрываем только после подтверждения на следующей сверке.
+                misses = self._missing_on_exchange.get(symbol, 0) + 1
+                self._missing_on_exchange[symbol] = misses
+                if misses < self.EXTERNAL_CLOSE_CONFIRMATIONS:
+                    logger.info(
+                        f"{symbol} не найдена на бирже ({misses}/"
+                        f"{self.EXTERNAL_CLOSE_CONFIRMATIONS}) — ждём подтверждения"
                     )
+                    continue
 
-                    # Обновляем БД
-                    with db.get_session() as session:
-                        db_position = session.query(Position).filter(
-                            Position.contract_symbol == symbol,
-                            Position.status == 'open'
-                        ).first()
+                del self._missing_on_exchange[symbol]
+                position = self._active_positions[symbol]
+                exit_price = float(position.current_price or position.entry_price)
 
-                        if db_position:
-                            db_position.status = 'closed'
-                            db_position.current_price = exit_price
-                            db_position.closed_at = datetime.utcnow()
+                logger.warning(
+                    f"🔄 Позиция {symbol} закрыта вне бота "
+                    f"(вручную на бирже). Удаляем из отслеживания."
+                )
 
-                            trade = Trade(
-                                contract_symbol=symbol,
-                                trade_type='external_close',
-                                price=exit_price,
-                                volume_usdt=float(position.total_volume_usdt),
-                                pnl=0,  # Не знаем точный PnL
-                            )
-                            session.add(trade)
+                # Обновляем БД
+                with db.get_session() as session:
+                    db_position = session.query(Position).filter(
+                        Position.contract_symbol == symbol,
+                        Position.status == 'open'
+                    ).first()
 
-                        # Сбрасываем флаг, чтобы мониторинг мог переоткрыть
-                        contract = session.query(Contract).filter(
-                            Contract.symbol == symbol
-                        ).first()
-                        if contract:
-                            contract.listing_taken_in_work = False
+                    if db_position:
+                        db_position.status = 'closed'
+                        db_position.current_price = exit_price
+                        db_position.closed_at = datetime.utcnow()
 
-                        session.commit()
+                        trade = Trade(
+                            contract_symbol=symbol,
+                            trade_type='external_close',
+                            price=exit_price,
+                            volume_usdt=float(position.total_volume_usdt),
+                            pnl=0,  # Не знаем точный PnL
+                        )
+                        session.add(trade)
 
-                    del self._active_positions[symbol]
-                    closed_externally.append(symbol)
+                    # Сбрасываем флаг, чтобы мониторинг мог переоткрыть
+                    contract = session.query(Contract).filter(
+                        Contract.symbol == symbol
+                    ).first()
+                    if contract:
+                        contract.listing_taken_in_work = False
+
+                    session.commit()
+
+                del self._active_positions[symbol]
+                closed_externally.append(symbol)
 
             return closed_externally
 

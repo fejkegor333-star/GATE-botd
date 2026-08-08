@@ -255,12 +255,18 @@ class GateApiClient:
             logger.error(f"Неожиданная ошибка при получении позиции: {e}")
             raise
 
-    async def get_all_positions(self) -> List[Dict[str, Any]]:
+    async def get_all_positions(self) -> Optional[List[Dict[str, Any]]]:
         """
         Получить все открытые позиции с биржи
 
         Returns:
-            Список позиций с ненулевым size
+            Список позиций с ненулевым size (пустой — если позиций нет),
+            либо None, если биржу прочитать не удалось.
+
+        Разница принципиальна: [] означает «биржа ответила, позиций нет»,
+        None — «ответа нет». Раньше оба случая возвращали [], из-за чего
+        detect_externally_closed() не мог отличить сбой от реального
+        закрытия и вечно держал фантомные позиции.
         """
         try:
             session = await self.get_session()
@@ -273,7 +279,7 @@ class GateApiClient:
                 if response.status != 200:
                     error_text = await response.text()
                     logger.error(f"API Error {response.status}: {error_text[:200]}")
-                    return []
+                    return None
 
                 data = await response.json()
 
@@ -285,7 +291,7 @@ class GateApiClient:
 
         except Exception as e:
             logger.error(f"Ошибка получения всех позиций: {e}")
-            return []
+            return None
 
     async def get_futures_balance(self) -> Dict[str, Any]:
         """
